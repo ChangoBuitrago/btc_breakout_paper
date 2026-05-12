@@ -1,9 +1,10 @@
 venv/
 venv_modern/
+.venv/
 old/
 __pycache__/
 *.pyc
-
-btc_breakout_clean/cache/
-btc_breakout_clean/paper_binance/
-btc_breakout_clean/paper_btc_breakout/
+.DS_Store
+.env
+.env.*
+*.log

@@ -25,34 +25,17 @@ sys.path.insert(0, str(HERE))
 
 from btc_breakout_binance_paper_bot import (  # noqa: E402
     fetch_binance_daily,
+    live_strategy_config,
     print_bot_report,
     write_state,
 )
 from btc_breakout_paper_sim import (  # noqa: E402
     SimConfig,
-    StrategyConfig,
     add_indicators,
     fmt,
+    latest_signal_report,
     simulate_account,
 )
-
-
-def latest_signal(df: pd.DataFrame, strat_cfg: StrategyConfig) -> dict[str, Any]:
-    last = df.iloc[-1]
-    latest = {
-        "signal_date": df.index[-1].isoformat(),
-        "close": float(last["close"]),
-        "prior_high": float(last["prior_high"]) if pd.notna(last["prior_high"]) else None,
-        "breakout_bps": float(last["breakout_bps"]) if pd.notna(last["breakout_bps"]) else None,
-        "sma200": float(last["sma200"]) if pd.notna(last["sma200"]) else None,
-        "bull": bool(last["bull"]),
-        "signal": bool(last["signal"]),
-        "next_size_frac": 0.0,
-    }
-    if latest["signal"]:
-        rv = float(last["vol20"])
-        latest["next_size_frac"] = min(strat_cfg.max_alloc, strat_cfg.vol_target / rv) if rv > 0 else 0.0
-    return latest
 
 
 def load_previous_state(path: Path) -> dict[str, Any]:
@@ -205,22 +188,11 @@ def main() -> None:
         write_files=False,
         out_dir=Path("."),
     )
-    strat_cfg = StrategyConfig(
-        lookback=15,
-        buffer_bps=100.0,
-        max_breakout_bps=225.0,
-        trend_mode="bull_only",
-        hold_days=5,
-        trail_atr=0.0,
-        fee_bps=10.0,
-        vol_target=0.015,
-        max_alloc=0.75,
-        compound=False,
-    )
+    strat_cfg = live_strategy_config()
 
     df = add_indicators(raw, strat_cfg)
     trades, curve, summary = simulate_account(df, sim_cfg=sim_cfg, strat_cfg=strat_cfg)
-    latest = latest_signal(df, strat_cfg)
+    latest = latest_signal_report(df, strat_cfg)
     event = classify_event(previous, latest, trades)
     year_summary = summarize_signal_year(trades, signal_date=latest["signal_date"], starting_equity=args.equity)
     state_written = not args.no_write

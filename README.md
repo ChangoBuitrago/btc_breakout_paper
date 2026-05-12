@@ -17,13 +17,14 @@ path uses Binance public `BTCUSDT` daily candles and never sends real orders.
 ## Quick Start
 
 ```bash
-python -m pip install pandas yfinance
+python -m pip install pandas
 python btc_breakout_clean/btc_breakout_binance_paper_bot.py
 ```
 
 For the historical Dukascopy/Yahoo-compatible simulator:
 
 ```bash
+python -m pip install yfinance
 python btc_breakout_clean/btc_breakout_paper_sim.py
 ```
 
@@ -74,18 +75,16 @@ TELEGRAM_BOT_TOKEN="..." TELEGRAM_CHAT_ID="..." \
   python btc_breakout_clean/run_binance_paper_daily.py
 ```
 
-## Research Scripts
+## Repository Layout
 
-The repository also includes the research scripts used to arrive at the live
-rule:
+The tracked live project is intentionally small:
 
-- `btc_breakout_clean/btc_breakout_final.py` - final validation, fixed hold logic, stress tests.
-- `btc_breakout_clean/btc_breakout_extend.py` - structural hold/trend/IS-OOS exploration.
-- `btc_breakout_clean/btc_breakout_relax_probe.py` - parameter relaxation and breakout cap tests.
-- `btc_breakout_clean/btc_breakout_hold_decay.py` - fixed-hold decay and risk grids.
-- `btc_breakout_clean/btc_breakout_position.py` - multi-day position experiments.
-- `btc_breakout_clean/btc_strategy_probe.py` - initial BTC RAM/DPB probe.
-- `btc_breakout_clean/btc_dpb_refine.py` - DPB refinement scans.
+- `btc_breakout_clean/run_binance_paper_daily.py` - cron/GitHub wrapper with Telegram notification.
+- `btc_breakout_clean/btc_breakout_binance_paper_bot.py` - Binance public candle fetcher and paper report.
+- `btc_breakout_clean/btc_breakout_paper_sim.py` - shared simulator and historical CLI.
+
+Research scripts and local generated outputs live under `old/`, which is
+gitignored.
 
 ## Disclaimer
 

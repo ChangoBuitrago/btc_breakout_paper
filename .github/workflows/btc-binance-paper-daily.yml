@@ -28,7 +28,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install pandas yfinance
+          python -m pip install pandas
 
       - name: Restore previous paper state
         uses: actions/cache@v4

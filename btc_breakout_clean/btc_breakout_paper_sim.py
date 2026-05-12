@@ -26,7 +26,6 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-import yfinance as yf
 
 warnings.filterwarnings("ignore")
 
@@ -106,6 +105,11 @@ def load_cached_btc(cache_path: Path, start: str, end: str | None, include_curre
 
 
 def download_btc(start: str, end: str | None, include_current: bool) -> pd.DataFrame:
+    try:
+        import yfinance as yf
+    except ImportError as exc:
+        raise RuntimeError("Install yfinance to use --source yfinance or --source compare") from exc
+
     today = pd.Timestamp.today(tz="UTC").strftime("%Y-%m-%d")
     tomorrow = (pd.Timestamp.today(tz="UTC") + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
     end_candidates = [end] if end else ([tomorrow, today, None] if include_current else [today, None])

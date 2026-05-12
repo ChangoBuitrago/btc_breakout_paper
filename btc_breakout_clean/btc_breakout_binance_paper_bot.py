@@ -36,6 +36,7 @@ from btc_breakout_paper_sim import (  # noqa: E402
     add_indicators,
     fmt,
     fmt_pf,
+    latest_signal_report,
     simulate_account,
 )
 
@@ -44,6 +45,21 @@ BINANCE_BASE_URL_FALLBACKS = (
     "https://api.binance.com",
     "https://data-api.binance.vision",
 )
+
+
+def live_strategy_config() -> StrategyConfig:
+    return StrategyConfig(
+        lookback=15,
+        buffer_bps=100.0,
+        max_breakout_bps=225.0,
+        trend_mode="bull_only",
+        hold_days=5,
+        trail_atr=0.0,
+        fee_bps=10.0,
+        vol_target=0.015,
+        max_alloc=0.75,
+        compound=False,
+    )
 
 
 def _fetch_binance_daily_from_base(symbol: str, start: str, end: str | None, base_url: str) -> pd.DataFrame:
@@ -218,33 +234,10 @@ def main() -> None:
         write_files=False,
         out_dir=Path("."),
     )
-    strat_cfg = StrategyConfig(
-        lookback=15,
-        buffer_bps=100.0,
-        max_breakout_bps=225.0,
-        trend_mode="bull_only",
-        hold_days=5,
-        trail_atr=0.0,
-        fee_bps=10.0,
-        vol_target=0.015,
-        max_alloc=0.75,
-        compound=False,
-    )
+    strat_cfg = live_strategy_config()
     df = add_indicators(raw, strat_cfg)
     trades, curve, summary = simulate_account(df, sim_cfg=sim_cfg, strat_cfg=strat_cfg)
-    latest = {
-        "signal_date": df.index[-1].isoformat(),
-        "close": float(df["close"].iloc[-1]),
-        "prior_high": float(df["prior_high"].iloc[-1]) if pd.notna(df["prior_high"].iloc[-1]) else None,
-        "breakout_bps": float(df["breakout_bps"].iloc[-1]) if pd.notna(df["breakout_bps"].iloc[-1]) else None,
-        "sma200": float(df["sma200"].iloc[-1]) if pd.notna(df["sma200"].iloc[-1]) else None,
-        "bull": bool(df["bull"].iloc[-1]),
-        "signal": bool(df["signal"].iloc[-1]),
-        "next_size_frac": 0.0,
-    }
-    if latest["signal"]:
-        rv = float(df["vol20"].iloc[-1])
-        latest["next_size_frac"] = min(strat_cfg.max_alloc, strat_cfg.vol_target / rv) if rv > 0 else 0.0
+    latest = latest_signal_report(df, strat_cfg)
 
     state_path = Path(args.state_path)
     state_written = not args.no_write
