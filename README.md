@@ -1,8 +1,7 @@
-# BTC + Metals Breakout Paper Bot
+# Breakout Paper Bot
 
-Paper-trading and research toolkit for long-only breakout strategies. The
-production path tracks a weighted BTC + metals basket with public daily candles
-and never sends real orders.
+Equal-weight **BTC + metals** paper portfolio (`BTCUSD`, `XAUUSD`, `XAGUSD`,
+`XCUUSD`) using public daily data. Never sends real orders.
 
 ## Live Paper Rules
 
@@ -10,14 +9,14 @@ and never sends real orders.
 - Entry: next UTC daily open after the signal.
 - Sizing: `min(0.75x, 1.50% / 20-day daily realized vol)`.
 - Sizing base: current fake sleeve equity, compounded.
-- Account: `$50,000` total, split by sleeve.
+- Account: `$40,000` total, split equally across four `$10k` sleeves.
 
 Tracked sleeves and fitted paper rules:
 
-- `BTCUSD`: `$20k`, Dukascopy, 15d breakout, 100 bps buffer, 225 bps cap, 5-day hold, 10 bps costs.
-- `XAUUSD`: `$15k`, Dukascopy, 30d breakout, 100 bps buffer, 225 bps cap, `sma200_95`, 15-day hold, 2 bps costs.
+- `BTCUSD`: `$10k`, Dukascopy, 15d breakout, 100 bps buffer, 225 bps cap, 5-day hold, 10 bps costs.
+- `XAUUSD`: `$10k`, Dukascopy, 30d breakout, 100 bps buffer, 225 bps cap, `sma200_95`, 15-day hold, 2 bps costs.
 - `XAGUSD`: `$10k`, Dukascopy, 30d breakout, 100 bps buffer, 225 bps cap, `sma200_95`, 15-day hold, 2 bps costs.
-- `XCUUSD`: `$5k`, Dukascopy, 15d breakout, 100 bps buffer, 225 bps cap, 5-day hold, 10 bps costs.
+- `XCUUSD`: `$10k`, Dukascopy, 15d breakout, 100 bps buffer, 225 bps cap, 5-day hold, 10 bps costs.
 
 ## Quick Start
 
@@ -66,7 +65,7 @@ GitHub workflow caches and uploads them as Actions artifacts.
 
 ## GitHub Actions
 
-Workflow: `.github/workflows/btc-binance-paper-daily.yml`
+Workflow: `.github/workflows/btc-binance-paper-daily.yml` (display name **Breakout Paper Daily**)
 
 - Runs daily at `00:10 UTC`, shortly after the UTC daily candle closes.
 - Can be triggered manually from the Actions tab.

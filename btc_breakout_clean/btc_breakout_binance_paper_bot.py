@@ -1,17 +1,13 @@
 #!/usr/bin/env python3
 """
-BTC breakout Binance paper bot.
+Breakout paper bot helpers.
 
-Queries public daily candles and replays the live rule in a fake account. It
-never places real orders.
+Fetches public daily candles (Binance or Dukascopy-backed) and replays the
+configured breakout rule in a fake account. Never places real orders.
 
-Live rule:
-  Signal: close[t] > prior close high + configured buffer
-  Filter: breakout size <= configured exhaustion cap
-  Regime: close[t] > 200-day SMA
-  Entry:  next day's open
-  Exit:   close after configured hold period
-  Size:   min(0.75x, 1.50% / 20-day daily realized vol)
+Default live portfolio sleeves are defined in LIVE_SYMBOLS and
+LIVE_STRATEGY_PARAMS. Per-symbol rules include lookback, buffer, exhaustion cap,
+regime filter, hold, fees, and compounding.
 """
 
 from __future__ import annotations
@@ -48,11 +44,10 @@ BINANCE_BASE_URL_FALLBACKS = (
     "https://data-api.binance.vision",
 )
 LIVE_SYMBOLS = ("BTCUSD", "XAUUSD", "XAGUSD", "XCUUSD")
-LIVE_PORTFOLIO_EQUITY = 50_000.0
 LIVE_STRATEGY_PARAMS: dict[str, dict[str, float | int | str | bool]] = {
     "BTCUSD": {
         "source": "dukascopy",
-        "equity": 20_000.0,
+        "equity": 10_000.0,
         "lookback": 15,
         "buffer_bps": 100.0,
         "max_breakout_bps": 225.0,
@@ -63,7 +58,7 @@ LIVE_STRATEGY_PARAMS: dict[str, dict[str, float | int | str | bool]] = {
     },
     "XAUUSD": {
         "source": "dukascopy",
-        "equity": 15_000.0,
+        "equity": 10_000.0,
         "lookback": 30,
         "buffer_bps": 100.0,
         "max_breakout_bps": 225.0,
@@ -85,7 +80,7 @@ LIVE_STRATEGY_PARAMS: dict[str, dict[str, float | int | str | bool]] = {
     },
     "XCUUSD": {
         "source": "dukascopy",
-        "equity": 5_000.0,
+        "equity": 10_000.0,
         "lookback": 15,
         "buffer_bps": 100.0,
         "max_breakout_bps": 225.0,
@@ -101,6 +96,8 @@ LIVE_STRATEGY_PARAMS: dict[str, dict[str, float | int | str | bool]] = {
     "ETCUSDT": {"source": "binance", "lookback": 30, "buffer_bps": 100.0, "max_breakout_bps": 400.0, "hold_days": 5},
 }
 
+LIVE_PORTFOLIO_EQUITY = sum(float(LIVE_STRATEGY_PARAMS[s]["equity"]) for s in LIVE_SYMBOLS)
+
 
 def live_symbol_params(symbol: str) -> dict[str, float | int | str | bool]:
     return LIVE_STRATEGY_PARAMS.get(symbol.upper(), LIVE_STRATEGY_PARAMS["BTCUSD"])
@@ -114,7 +111,7 @@ def live_symbol_equity(symbol: str, fallback: float) -> float:
     return float(live_symbol_params(symbol).get("equity", fallback))
 
 
-def live_strategy_config(symbol: str = "BTCUSDT") -> StrategyConfig:
+def live_strategy_config(symbol: str = "BTCUSD") -> StrategyConfig:
     params = live_symbol_params(symbol)
     return StrategyConfig(
         lookback=int(params["lookback"]),
@@ -280,7 +277,7 @@ def print_bot_report(
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Binance BTCUSDT fake-money paper bot")
+    p = argparse.ArgumentParser(description="Single-symbol breakout paper bot (Binance daily candles)")
     p.add_argument("--symbol", default="BTCUSDT")
     p.add_argument("--base-url", default=DEFAULT_BINANCE_BASE_URL)
     p.add_argument("--start", default="2018-01-01")

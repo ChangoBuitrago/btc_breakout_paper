@@ -1,16 +1,13 @@
 #!/usr/bin/env python3
 """
-BTC breakout fake-money simulator.
+Breakout fake-money simulator and data helpers.
 
-Final relaxed strategy:
-  Signal: close[t] > prior 15-day close high + 100 bps
-  Filter: breakout size <= 225 bps to avoid exhaustion/chase setups
-  Regime: close[t] > 200-day SMA
-  Entry:  next day's open
-  Exit:   close after 5 trading days
-  Size:   min(0.75x, 1.50% / 20-day daily realized vol)
+Implements long-only breakout signals, regime filters, multi-day holds, optional
+trailing exits, and non-compounding or compounding sizing. Supports yfinance
+(optional), Dukascopy (H1 resampled to daily), and ad-hoc sources such as
+Binance daily candles when wired through SimConfig.
 
-The simulator is terminal-first and does not place real orders.
+Terminal-first by default; does not place real orders.
 """
 
 from __future__ import annotations

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Daily runner for the breakout paper bot.
+Daily runner for the breakout paper portfolio.
 
-Designed for cron/GitHub Actions. It writes paper state files, appends a compact
-run log, and prints the daily action. The default portfolio is a $50k weighted
-BTC + metals basket using Dukascopy candles.
+Designed for cron/GitHub Actions. Writes per-sleeve paper state, appends a run
+log, and optionally sends a Telegram summary. Default sleeves are equal-weight
+BTC + metals (Dukascopy daily, H1 resampled) with total capital LIVE_PORTFOLIO_EQUITY.
 """
 
 from __future__ import annotations
@@ -37,6 +37,7 @@ from btc_breakout_binance_paper_bot import (  # noqa: E402
 )
 from btc_breakout_paper_sim import (  # noqa: E402
     SimConfig,
+    StrategyConfig,
     TREND_MODE_CHOICES,
     add_indicators,
     dukascopy_cache_path,
@@ -111,7 +112,6 @@ def summarize_signal_year(
     curve: pd.DataFrame,
     *,
     signal_date: str,
-    starting_equity: float,
 ) -> dict[str, Any]:
     year = pd.Timestamp(signal_date).year
     if curve.empty:
@@ -130,7 +130,6 @@ def summarize_signal_year(
         trade_count = int(len(year_trades))
     return {
         "year": year,
-        "equity": float(starting_equity) + pnl,
         "pnl": pnl,
         "trades": trade_count,
     }
@@ -149,7 +148,7 @@ def fmt_signed_money(value: float) -> str:
     return f"{sign}${abs(value):,.0f}"
 
 
-def signal_status(latest: dict[str, Any], strat_cfg: Any) -> str:
+def signal_status(latest: dict[str, Any], strat_cfg: StrategyConfig) -> str:
     if latest["signal"]:
         return "ENTER next open"
     if not latest.get("regime_on", latest["bull"]):
@@ -202,7 +201,7 @@ def send_telegram_message(token: str, chat_id: str, text: str) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Daily BTC + metals paper runner")
+    p = argparse.ArgumentParser(description="Daily breakout paper portfolio runner")
     p.add_argument("--symbol", default=None, help="Run one symbol only; overrides --symbols")
     p.add_argument("--symbols", default=",".join(LIVE_SYMBOLS), help="Comma-separated symbols for portfolio tracking")
     p.add_argument("--base-url", default="https://api.binance.com")
@@ -275,10 +274,9 @@ def run_symbol(args: argparse.Namespace, symbol: str, state_dir: Path, log_path:
 
     df = add_indicators(raw, strat_cfg)
     trades, curve, summary = simulate_account(df, sim_cfg=sim_cfg, strat_cfg=strat_cfg)
-    summary["start_date"] = curve["date"].iloc[0] if not curve.empty else pd.Timestamp(args.start, tz="UTC").isoformat()
     latest = latest_signal_report(df, strat_cfg)
     event = classify_event(previous, latest, trades)
-    year_summary = summarize_signal_year(trades, curve, signal_date=latest["signal_date"], starting_equity=equity)
+    year_summary = summarize_signal_year(trades, curve, signal_date=latest["signal_date"])
     state_written = not args.no_write
 
     if state_written:

@@ -1,8 +1,8 @@
-name: BTC Metals Paper Daily
+name: Breakout Paper Daily
 
 on:
   schedule:
-    # Binance daily candles close at 00:00 UTC. Run shortly after.
+    # UTC daily bars; run shortly after 00:00 UTC close.
     - cron: "10 0 * * *"
   workflow_dispatch:
 
@@ -40,7 +40,7 @@ jobs:
           restore-keys: |
             btc-metals-paper-
 
-      - name: Run BTC metals paper bot
+      - name: Run breakout paper portfolio
         run: |
           python btc_breakout_clean/run_binance_paper_daily.py --base-url "$BINANCE_BASE_URL"
 
@@ -71,7 +71,7 @@ jobs:
           run_id = os.getenv("GITHUB_RUN_ID")
           server = os.getenv("GITHUB_SERVER_URL", "https://github.com")
           url = f"{server}/{repo}/actions/runs/{run_id}"
-          text = f"BTC metals paper bot workflow FAILED\nRepo: {repo}\nRun: {url}"
+          text = f"Breakout paper workflow FAILED\nRepo: {repo}\nRun: {url}"
           payload = urllib.parse.urlencode({"chat_id": chat_id, "text": text}).encode("utf-8")
           with urllib.request.urlopen(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, timeout=20) as resp:
               resp.read()
