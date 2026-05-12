@@ -113,37 +113,48 @@ def append_run_log(
         writer.writerow(row)
 
 
+def summarize_signal_year(
+    trades: pd.DataFrame,
+    *,
+    signal_date: str,
+    starting_equity: float,
+) -> dict[str, Any]:
+    year = pd.Timestamp(signal_date).year
+    if trades.empty:
+        pnl = 0.0
+        trade_count = 0
+    else:
+        t = trades.copy()
+        t["entry_date"] = pd.to_datetime(t["entry_date"], utc=True)
+        t["net_pnl"] = pd.to_numeric(t["net_pnl"], errors="coerce").fillna(0.0)
+        year_trades = t[t["entry_date"].dt.year == year]
+        pnl = float(year_trades["net_pnl"].sum())
+        trade_count = int(len(year_trades))
+    return {
+        "year": year,
+        "equity": float(starting_equity) + pnl,
+        "pnl": pnl,
+        "trades": trade_count,
+    }
+
+
 def build_telegram_message(
     *,
     event: str,
     symbol: str,
-    summary: dict[str, Any],
+    year_summary: dict[str, Any],
     latest: dict[str, Any],
 ) -> str:
-    run_url = os.getenv("GITHUB_RUN_ID")
-    repo = os.getenv("GITHUB_REPOSITORY")
-    server = os.getenv("GITHUB_SERVER_URL", "https://github.com")
-    action_url = f"{server}/{repo}/actions/runs/{run_url}" if run_url and repo else "local run"
     next_action = "PAPER ENTER LONG" if latest["signal"] else "NO TRADE"
     breakout = f"{latest['breakout_bps']:.0f}bps" if latest.get("breakout_bps") is not None else "n/a"
-    sma = f"{latest['sma200']:,.2f}" if latest.get("sma200") is not None else "n/a"
     return "\n".join(
         [
-            f"BTC paper bot daily update ({symbol.upper()})",
-            f"Event: {event}",
-            f"Next action: {next_action}",
-            f"Signal date: {latest['signal_date'][:10]}",
-            f"Close: {latest['close']:,.2f}",
-            f"Prior high: {latest['prior_high']:,.2f}" if latest.get("prior_high") is not None else "Prior high: n/a",
-            f"Breakout: {breakout}",
-            f"SMA200: {sma}",
-            f"Bull regime: {'YES' if latest['bull'] else 'NO'}",
-            f"Fake equity: {summary['final_equity']:,.2f}",
-            f"Net PnL: {summary['net_pnl']:,.2f}",
-            f"Trades: {summary['trades']}",
-            f"PF: {summary['profit_factor']:.2f}",
-            f"Max DD: {summary['max_drawdown_pct']:.2f}%",
-            f"Run: {action_url}",
+            f"{symbol.upper()} paper | {latest['signal_date'][:10]}",
+            f"Close: {latest['close']:,.2f} | Breakout: {breakout}",
+            f"Signal: {'YES' if latest['signal'] else 'NO'} | Action: {next_action}",
+            f"Bull: {'YES' if latest['bull'] else 'NO'} | Event: {event}",
+            f"{year_summary['year']} equity: ${year_summary['equity']:,.2f} | PnL: ${year_summary['pnl']:,.2f}",
+            f"{year_summary['year']} trades: {year_summary['trades']}",
         ]
     )
 
@@ -211,6 +222,7 @@ def main() -> None:
     trades, curve, summary = simulate_account(df, sim_cfg=sim_cfg, strat_cfg=strat_cfg)
     latest = latest_signal(df, strat_cfg)
     event = classify_event(previous, latest, trades)
+    year_summary = summarize_signal_year(trades, signal_date=latest["signal_date"], starting_equity=args.equity)
     state_written = not args.no_write
 
     if state_written:
@@ -229,7 +241,7 @@ def main() -> None:
     if args.no_telegram:
         print("  Telegram notification disabled (--no-telegram)")
     elif args.telegram_token and args.telegram_chat_id:
-        message = build_telegram_message(event=event, symbol=args.symbol, summary=summary, latest=latest)
+        message = build_telegram_message(event=event, symbol=args.symbol, year_summary=year_summary, latest=latest)
         try:
             send_telegram_message(args.telegram_token, args.telegram_chat_id, message)
             print("  Telegram notification sent")
