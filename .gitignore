@@ -8,3 +8,8 @@ __pycache__/
 .env
 .env.*
 *.log
+
+btc_breakout_clean/cache/
+btc_breakout_clean/paper_binance/
+btc_breakout_clean/paper_portfolio/
+btc_breakout_clean/paper_btc_breakout/

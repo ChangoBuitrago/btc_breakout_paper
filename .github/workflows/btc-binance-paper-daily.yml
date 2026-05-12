@@ -1,4 +1,4 @@
-name: BTC Binance Paper Daily
+name: BTC Metals Paper Daily
 
 on:
   schedule:
@@ -28,25 +28,29 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install pandas
+          python -m pip install pandas dukascopy-python
 
       - name: Restore previous paper state
         uses: actions/cache@v4
         with:
-          path: btc_breakout_clean/paper_binance/
-          key: btc-binance-paper-${{ github.run_id }}
+          path: |
+            btc_breakout_clean/paper_portfolio/
+            btc_breakout_clean/cache/
+          key: btc-metals-paper-${{ github.run_id }}
           restore-keys: |
-            btc-binance-paper-
+            btc-metals-paper-
 
-      - name: Run Binance paper bot
+      - name: Run BTC metals paper bot
         run: |
           python btc_breakout_clean/run_binance_paper_daily.py --base-url "$BINANCE_BASE_URL"
 
       - name: Upload paper state
         uses: actions/upload-artifact@v4
         with:
-          name: btc-binance-paper-state
-          path: btc_breakout_clean/paper_binance/
+          name: btc-metals-paper-state
+          path: |
+            btc_breakout_clean/paper_portfolio/
+            btc_breakout_clean/cache/
           retention-days: 90
 
       - name: Notify Telegram on failure
@@ -67,7 +71,7 @@ jobs:
           run_id = os.getenv("GITHUB_RUN_ID")
           server = os.getenv("GITHUB_SERVER_URL", "https://github.com")
           url = f"{server}/{repo}/actions/runs/{run_id}"
-          text = f"BTC paper bot workflow FAILED\nRepo: {repo}\nRun: {url}"
+          text = f"BTC metals paper bot workflow FAILED\nRepo: {repo}\nRun: {url}"
           payload = urllib.parse.urlencode({"chat_id": chat_id, "text": text}).encode("utf-8")
           with urllib.request.urlopen(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, timeout=20) as resp:
               resp.read()

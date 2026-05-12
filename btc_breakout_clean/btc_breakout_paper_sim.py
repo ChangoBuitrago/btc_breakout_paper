@@ -30,6 +30,26 @@ import pandas as pd
 warnings.filterwarnings("ignore")
 
 DUKASCOPY_CHUNK_DAYS = 180
+DEFAULT_DUKASCOPY_INSTRUMENT = "BTCUSD"
+DUKASCOPY_INSTRUMENTS = {
+    "BTCUSD": "INSTRUMENT_VCCY_BTC_USD",
+    "XAUUSD": "INSTRUMENT_FX_METALS_XAU_USD",
+    "XAGUSD": "INSTRUMENT_FX_METALS_XAG_USD",
+    "XCUUSD": "INSTRUMENT_CMD_METALS_COPPER_CMD_USD",
+    "COPPER": "INSTRUMENT_CMD_METALS_COPPER_CMD_USD",
+    "CL": "INSTRUMENT_CMD_ENERGY_E_LIGHT",
+    "WTI": "INSTRUMENT_CMD_ENERGY_E_LIGHT",
+    "BRENT": "INSTRUMENT_CMD_ENERGY_E_BRENT",
+    "US500": "INSTRUMENT_IDX_AMERICA_E_SANDP_500",
+    "NAS100": "INSTRUMENT_IDX_AMERICA_E_NQ_100",
+    "US2000": "INSTRUMENT_IDX_AMERICA_RUSSELL_IDX_USD",
+    "USDJPY": "INSTRUMENT_FX_MAJORS_USD_JPY",
+    "EURJPY": "INSTRUMENT_FX_CROSSES_EUR_JPY",
+    "GBPJPY": "INSTRUMENT_FX_CROSSES_GBP_JPY",
+    "AUDJPY": "INSTRUMENT_FX_CROSSES_AUD_JPY",
+    "CADJPY": "INSTRUMENT_FX_CROSSES_CAD_JPY",
+    "CHFJPY": "INSTRUMENT_FX_CROSSES_CHF_JPY",
+}
 TREND_MODE_CHOICES = (
     "all",
     "bull_only",
@@ -72,6 +92,7 @@ class SimConfig:
     show_trades: int
     write_files: bool
     out_dir: Path
+    instrument: str = DEFAULT_DUKASCOPY_INSTRUMENT
 
 
 def normalize_ohlc(df: pd.DataFrame) -> pd.DataFrame:
@@ -81,7 +102,7 @@ def normalize_ohlc(df: pd.DataFrame) -> pd.DataFrame:
 
     required = {"open", "high", "low", "close"}
     if not required.issubset(df.columns):
-        raise RuntimeError(f"BTC-USD missing OHLC columns: {list(df.columns)}")
+        raise RuntimeError(f"Data missing OHLC columns: {list(df.columns)}")
 
     df.index = pd.to_datetime(df.index, utc=True)
     df = df[~df.index.duplicated(keep="first")].sort_index()
@@ -181,11 +202,21 @@ def quiet_dukascopy_logs():
         root.setLevel(root_level)
 
 
-def download_dukascopy_btc_h1(start: str, end: str | None) -> pd.DataFrame:
+def dukascopy_cache_path(instrument: str) -> Path:
+    return Path(f"btc_breakout_clean/cache/{instrument.upper()}_dukascopy_h1.csv")
+
+
+def resolve_dukascopy_instrument(instrument: str) -> str:
+    key = instrument.upper().replace("/", "").replace("-", "").replace("_", "")
+    return DUKASCOPY_INSTRUMENTS.get(key, instrument)
+
+
+def download_dukascopy_h1(instrument: str, start: str, end: str | None) -> pd.DataFrame:
     import dukascopy_python as dka
     import dukascopy_python.instruments as ins
 
-    instr = getattr(ins, "INSTRUMENT_VCCY_BTC_USD")
+    instrument_name = resolve_dukascopy_instrument(instrument)
+    instr = getattr(ins, instrument_name)
     t0 = pd.Timestamp(start, tz="UTC")
     t1 = pd.Timestamp(end, tz="UTC") if end else pd.Timestamp.now(tz="UTC")
     t1 = min(t1, pd.Timestamp.now(tz="UTC"))
@@ -207,7 +238,7 @@ def download_dukascopy_btc_h1(start: str, end: str | None) -> pd.DataFrame:
             cur = nxt
 
     if not parts:
-        raise RuntimeError("Dukascopy returned empty BTCUSD data")
+        raise RuntimeError(f"Dukascopy returned empty data for {instrument}")
 
     h1 = pd.concat(parts, axis=0)
     h1 = normalize_ohlc(h1)
@@ -216,11 +247,22 @@ def download_dukascopy_btc_h1(start: str, end: str | None) -> pd.DataFrame:
     return h1
 
 
+def download_dukascopy_btc_h1(start: str, end: str | None) -> pd.DataFrame:
+    return download_dukascopy_h1("BTCUSD", start, end)
+
+
 def resample_h1_to_daily(h1: pd.DataFrame) -> pd.DataFrame:
     return normalize_ohlc(h1.resample("D").agg({"open": "first", "high": "max", "low": "min", "close": "last"}))
 
 
-def fetch_dukascopy_btc(path: Path, start: str, end: str | None, include_current: bool, refresh_cache: bool) -> pd.DataFrame:
+def fetch_dukascopy_instrument(
+    instrument: str,
+    path: Path,
+    start: str,
+    end: str | None,
+    include_current: bool,
+    refresh_cache: bool,
+) -> pd.DataFrame:
     cached = pd.DataFrame()
     if not path.exists():
         refresh_cache = True
@@ -231,7 +273,7 @@ def fetch_dukascopy_btc(path: Path, start: str, end: str | None, include_current
         daily = resample_h1_to_daily(cached)
     else:
         try:
-            h1 = download_dukascopy_btc_h1(start, end)
+            h1 = download_dukascopy_h1(instrument, start, end)
             path.parent.mkdir(parents=True, exist_ok=True)
             h1.to_csv(path)
             daily = resample_h1_to_daily(h1)
@@ -247,6 +289,10 @@ def fetch_dukascopy_btc(path: Path, start: str, end: str | None, include_current
     return daily.loc[daily.index >= pd.Timestamp(start, tz="UTC").normalize()]
 
 
+def fetch_dukascopy_btc(path: Path, start: str, end: str | None, include_current: bool, refresh_cache: bool) -> pd.DataFrame:
+    return fetch_dukascopy_instrument("BTCUSD", path, start, end, include_current, refresh_cache)
+
+
 def fetch_source_data(sim_cfg: SimConfig) -> pd.DataFrame:
     if sim_cfg.source == "yfinance":
         return fetch_btc(
@@ -257,7 +303,8 @@ def fetch_source_data(sim_cfg: SimConfig) -> pd.DataFrame:
             sim_cfg.refresh_cache,
         )
     if sim_cfg.source == "dukascopy":
-        return fetch_dukascopy_btc(
+        return fetch_dukascopy_instrument(
+            sim_cfg.instrument,
             sim_cfg.dukascopy_path,
             sim_cfg.data_start,
             sim_cfg.end,
@@ -703,7 +750,8 @@ def print_report(
     print("=" * 92)
     print("  BTC BREAKOUT FAKE-MONEY SIMULATOR")
     print("=" * 92)
-    print(f"  Source: {sim_cfg.source}")
+    source = f"{sim_cfg.source}:{sim_cfg.instrument}" if sim_cfg.source == "dukascopy" else sim_cfg.source
+    print(f"  Source: {source}")
     print(f"  Data: {df.index[0].date()} -> {df.index[-1].date()} rows={len(df):,}")
     print(f"  Sim:  {sim_cfg.sim_start.date()} -> {df.index[-1].date()}")
     print(f"  Rule: close > prior {strat_cfg.lookback}d close high + {strat_cfg.buffer_bps:.0f}bps")
@@ -807,6 +855,7 @@ def fmt_pf(v: float) -> str:
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="BTC breakout fake-money simulator")
     p.add_argument("--source", choices=("yfinance", "dukascopy", "compare"), default="dukascopy")
+    p.add_argument("--instrument", default=DEFAULT_DUKASCOPY_INSTRUMENT, help="Dukascopy instrument alias, e.g. BTCUSD, XAUUSD, XAGUSD, XCUUSD, CL, BRENT, US500, NAS100")
     p.add_argument("--data-start", default="2018-01-01", help="Warmup data start")
     p.add_argument("--sim-start", default="2018-01-01", help="Fake account start date")
     p.add_argument("--end", default=None)
@@ -823,7 +872,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--compound", action="store_true", help="Reinvest gains/losses into future position sizes")
     p.add_argument("--include-current", action="store_true", help="Include current UTC daily candle if yfinance returns it")
     p.add_argument("--cache-path", default="btc_breakout_clean/cache/btc_usd_yfinance_daily.csv", help="Local OHLC cache path")
-    p.add_argument("--dukascopy-path", default="btc_breakout_clean/cache/BTCUSD_dukascopy_h1.csv", help="Local BTCUSD H1 CSV path")
+    p.add_argument("--dukascopy-path", default=None, help="Local Dukascopy H1 CSV path; defaults to cache/<instrument>_dukascopy_h1.csv")
     p.add_argument("--refresh-cache", action="store_true", help="Force a fresh yfinance download")
     p.add_argument("--show-trades", type=int, default=8, help="Print the last N fake-money trades; 0 disables")
     p.add_argument("--write-files", action="store_true", help="Also write CSV/JSON files")
@@ -832,6 +881,8 @@ def parse_args() -> argparse.Namespace:
 
 
 def build_configs(args: argparse.Namespace) -> tuple[SimConfig, StrategyConfig]:
+    instrument = args.instrument.upper()
+    dukascopy_path = Path(args.dukascopy_path) if args.dukascopy_path else dukascopy_cache_path(instrument)
     sim_cfg = SimConfig(
         source=args.source,
         data_start=args.data_start,
@@ -840,11 +891,12 @@ def build_configs(args: argparse.Namespace) -> tuple[SimConfig, StrategyConfig]:
         equity=args.equity,
         include_current=args.include_current,
         cache_path=Path(args.cache_path),
-        dukascopy_path=Path(args.dukascopy_path),
+        dukascopy_path=dukascopy_path,
         refresh_cache=args.refresh_cache,
         show_trades=args.show_trades,
         write_files=args.write_files,
         out_dir=Path(args.out_dir),
+        instrument=instrument,
     )
     strat_cfg = StrategyConfig(
         lookback=args.lookback,

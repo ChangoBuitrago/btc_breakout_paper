@@ -2,8 +2,8 @@
 """
 BTC breakout Binance paper bot.
 
-Queries Binance public BTCUSDT daily candles and replays the live rule in a
-fake account. It never places real orders.
+Queries public daily candles and replays the live rule in a fake account. It
+never places real orders.
 
 Live rule:
   Signal: close[t] > prior close high + configured buffer
@@ -47,28 +47,86 @@ BINANCE_BASE_URL_FALLBACKS = (
     "https://api.binance.com",
     "https://data-api.binance.vision",
 )
-LIVE_SYMBOLS = ("BTCUSDT", "BNBUSDT", "ETHUSDT", "ETCUSDT")
-LIVE_STRATEGY_PARAMS: dict[str, dict[str, float | int | str]] = {
-    "BTCUSDT": {"lookback": 15, "buffer_bps": 100.0, "max_breakout_bps": 225.0, "hold_days": 5},
-    "BNBUSDT": {"lookback": 15, "buffer_bps": 100.0, "max_breakout_bps": 400.0, "hold_days": 7},
-    "ETHUSDT": {"lookback": 10, "buffer_bps": 150.0, "max_breakout_bps": 300.0, "hold_days": 10},
-    "ETCUSDT": {"lookback": 30, "buffer_bps": 100.0, "max_breakout_bps": 400.0, "hold_days": 5},
+LIVE_SYMBOLS = ("BTCUSD", "XAUUSD", "XAGUSD", "XCUUSD")
+LIVE_PORTFOLIO_EQUITY = 50_000.0
+LIVE_STRATEGY_PARAMS: dict[str, dict[str, float | int | str | bool]] = {
+    "BTCUSD": {
+        "source": "dukascopy",
+        "equity": 20_000.0,
+        "lookback": 15,
+        "buffer_bps": 100.0,
+        "max_breakout_bps": 225.0,
+        "trend_mode": "bull_only",
+        "hold_days": 5,
+        "fee_bps": 10.0,
+        "compound": True,
+    },
+    "XAUUSD": {
+        "source": "dukascopy",
+        "equity": 15_000.0,
+        "lookback": 30,
+        "buffer_bps": 100.0,
+        "max_breakout_bps": 225.0,
+        "trend_mode": "sma200_95",
+        "hold_days": 15,
+        "fee_bps": 2.0,
+        "compound": True,
+    },
+    "XAGUSD": {
+        "source": "dukascopy",
+        "equity": 10_000.0,
+        "lookback": 30,
+        "buffer_bps": 100.0,
+        "max_breakout_bps": 225.0,
+        "trend_mode": "sma200_95",
+        "hold_days": 15,
+        "fee_bps": 2.0,
+        "compound": True,
+    },
+    "XCUUSD": {
+        "source": "dukascopy",
+        "equity": 5_000.0,
+        "lookback": 15,
+        "buffer_bps": 100.0,
+        "max_breakout_bps": 225.0,
+        "trend_mode": "bull_only",
+        "hold_days": 5,
+        "fee_bps": 10.0,
+        "compound": True,
+    },
+    # Kept for manual crypto-only checks with btc_breakout_binance_paper_bot.py.
+    "BTCUSDT": {"source": "binance", "lookback": 15, "buffer_bps": 100.0, "max_breakout_bps": 225.0, "hold_days": 5},
+    "BNBUSDT": {"source": "binance", "lookback": 15, "buffer_bps": 100.0, "max_breakout_bps": 400.0, "hold_days": 7},
+    "ETHUSDT": {"source": "binance", "lookback": 10, "buffer_bps": 150.0, "max_breakout_bps": 300.0, "hold_days": 10},
+    "ETCUSDT": {"source": "binance", "lookback": 30, "buffer_bps": 100.0, "max_breakout_bps": 400.0, "hold_days": 5},
 }
 
 
+def live_symbol_params(symbol: str) -> dict[str, float | int | str | bool]:
+    return LIVE_STRATEGY_PARAMS.get(symbol.upper(), LIVE_STRATEGY_PARAMS["BTCUSD"])
+
+
+def live_symbol_source(symbol: str) -> str:
+    return str(live_symbol_params(symbol).get("source", "binance"))
+
+
+def live_symbol_equity(symbol: str, fallback: float) -> float:
+    return float(live_symbol_params(symbol).get("equity", fallback))
+
+
 def live_strategy_config(symbol: str = "BTCUSDT") -> StrategyConfig:
-    params = LIVE_STRATEGY_PARAMS.get(symbol.upper(), LIVE_STRATEGY_PARAMS["BTCUSDT"])
+    params = live_symbol_params(symbol)
     return StrategyConfig(
         lookback=int(params["lookback"]),
         buffer_bps=float(params["buffer_bps"]),
         max_breakout_bps=float(params["max_breakout_bps"]),
-        trend_mode="bull_only",
+        trend_mode=str(params.get("trend_mode", "bull_only")),
         hold_days=int(params["hold_days"]),
         trail_atr=0.0,
-        fee_bps=10.0,
+        fee_bps=float(params.get("fee_bps", 10.0)),
         vol_target=0.015,
         max_alloc=0.75,
-        compound=False,
+        compound=bool(params.get("compound", False)),
     )
 
 
@@ -161,6 +219,7 @@ def write_state(
 
 def print_bot_report(
     symbol: str,
+    source_label: str,
     df: pd.DataFrame,
     trades: pd.DataFrame,
     curve: pd.DataFrame,
@@ -171,9 +230,9 @@ def print_bot_report(
     state_written: bool,
 ) -> None:
     print("=" * 92)
-    print("  CRYPTO BREAKOUT BINANCE PAPER BOT")
+    print("  BREAKOUT PAPER BOT")
     print("=" * 92)
-    print(f"  Symbol: {symbol.upper()}  |  Source: Binance public 1d klines")
+    print(f"  Symbol: {symbol.upper()}  |  Source: {source_label}")
     print(f"  Data:   {df.index[0].date()} -> {df.index[-1].date()} rows={len(df):,}")
     print(
         f"  Rule:   {strat_cfg.trend_mode}, {strat_cfg.lookback}d breakout "
@@ -184,7 +243,7 @@ def print_bot_report(
     print("-" * 92)
     print(f"  Final fake equity: ${fmt(summary['final_equity'])}")
     print(f"  Net fake PnL:      ${fmt(summary['net_pnl'])}")
-    print(f"  APR:               {summary['apr_pct']:.2f}%")
+    print(f"  CAGR:              {summary['cagr_pct']:.2f}%")
     print(f"  Max DD:            {summary['max_drawdown_pct']:.2f}%")
     print(f"  Trades:            {summary['trades']}")
     print(f"  Profit factor:     {fmt_pf(summary['profit_factor'])}")
@@ -263,7 +322,18 @@ def main() -> None:
     state_written = not args.no_write
     if state_written:
         write_state(state_path, Path(args.trades_path), Path(args.equity_path), trades, curve, summary, latest)
-    print_bot_report(args.symbol, df, trades, curve, summary, latest, strat_cfg, state_path, state_written)
+    print_bot_report(
+        args.symbol,
+        "Binance public 1d klines",
+        df,
+        trades,
+        curve,
+        summary,
+        latest,
+        strat_cfg,
+        state_path,
+        state_written,
+    )
 
 
 if __name__ == "__main__":
