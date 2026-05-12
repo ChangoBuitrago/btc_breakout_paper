@@ -1,18 +1,22 @@
-# BTC Breakout Paper Bot
+# Crypto Breakout Paper Bot
 
-Paper-trading and research toolkit for a BTC breakout strategy. The production
-path uses Binance public `BTCUSDT` daily candles and never sends real orders.
+Paper-trading and research toolkit for crypto breakout strategies. The
+production path uses Binance public daily candles and never sends real orders.
 
-## Live Paper Rule
+## Live Paper Rules
 
-- Signal: close above the prior 15-day close high by at least 100 bps.
-- Exhaustion filter: breakout size must be `<= 225 bps`.
-- Regime filter: only trade when close is above the 200-day SMA (`bull_only`).
+- Regime filter: only trade when close is above the 200-day SMA.
 - Entry: next UTC daily open after the signal.
-- Exit: close after 5 trading days.
 - Sizing: `min(0.75x, 1.50% / 20-day daily realized vol)`.
 - Sizing base: initial fake equity, no compounding by default.
 - Costs: 10 bps per side.
+
+Tracked symbols and fitted paper rules:
+
+- `BTCUSDT`: 15d breakout, 100 bps buffer, 225 bps cap, 5-day hold.
+- `BNBUSDT`: 15d breakout, 100 bps buffer, 400 bps cap, 7-day hold.
+- `ETHUSDT`: 10d breakout, 150 bps buffer, 300 bps cap, 10-day hold.
+- `ETCUSDT`: 30d breakout, 100 bps buffer, 400 bps cap, 5-day hold.
 
 ## Quick Start
 
@@ -38,9 +42,9 @@ python btc_breakout_clean/run_binance_paper_daily.py
 
 It writes:
 
-- `btc_breakout_clean/paper_binance/state.json`
-- `btc_breakout_clean/paper_binance/trades.csv`
-- `btc_breakout_clean/paper_binance/equity.csv`
+- `btc_breakout_clean/paper_binance/<SYMBOL>/state.json`
+- `btc_breakout_clean/paper_binance/<SYMBOL>/trades.csv`
+- `btc_breakout_clean/paper_binance/<SYMBOL>/equity.csv`
 - `btc_breakout_clean/paper_binance/run_log.csv`
 
 These generated files are gitignored locally. The GitHub workflow uploads them
@@ -54,7 +58,8 @@ Workflow: `.github/workflows/btc-binance-paper-daily.yml`
 - Can be triggered manually from the Actions tab.
 - Restores prior paper state from the Actions cache.
 - Uploads the paper state folder as an artifact.
-- Sends a Telegram daily update when `TELEGRAM_BOT_TOKEN` and
+- Tracks `BTCUSDT`, `BNBUSDT`, `ETHUSDT`, and `ETCUSDT` by default.
+- Sends one compact Telegram daily update when `TELEGRAM_BOT_TOKEN` and
   `TELEGRAM_CHAT_ID` repository secrets are configured.
 
 If Binance blocks the default endpoint from GitHub runners, set repository

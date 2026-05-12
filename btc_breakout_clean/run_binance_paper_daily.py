@@ -24,6 +24,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 from btc_breakout_binance_paper_bot import (  # noqa: E402
+    LIVE_SYMBOLS,
     fetch_binance_daily,
     live_strategy_config,
     print_bot_report,
@@ -121,25 +122,31 @@ def summarize_signal_year(
     }
 
 
+def parse_symbols(args: argparse.Namespace) -> list[str]:
+    raw = args.symbol or args.symbols
+    symbols = [part.strip().upper() for part in raw.split(",") if part.strip()]
+    if not symbols:
+        raise SystemExit("No symbols configured")
+    return symbols
+
+
 def build_telegram_message(
     *,
-    event: str,
-    symbol: str,
-    year_summary: dict[str, Any],
-    latest: dict[str, Any],
+    results: list[dict[str, Any]],
 ) -> str:
-    next_action = "PAPER ENTER LONG" if latest["signal"] else "NO TRADE"
-    breakout = f"{latest['breakout_bps']:.0f}bps" if latest.get("breakout_bps") is not None else "n/a"
-    return "\n".join(
-        [
-            f"{symbol.upper()} paper | {latest['signal_date'][:10]}",
-            f"Close: {latest['close']:,.2f} | Breakout: {breakout}",
-            f"Signal: {'YES' if latest['signal'] else 'NO'} | Action: {next_action}",
-            f"Bull: {'YES' if latest['bull'] else 'NO'} | Event: {event}",
-            f"{year_summary['year']} equity: ${year_summary['equity']:,.2f} | PnL: ${year_summary['pnl']:,.2f}",
-            f"{year_summary['year']} trades: {year_summary['trades']}",
-        ]
-    )
+    date = results[0]["latest"]["signal_date"][:10] if results else "n/a"
+    lines = [f"Crypto paper | {date}"]
+    for result in results:
+        latest = result["latest"]
+        year_summary = result["year_summary"]
+        breakout = f"{latest['breakout_bps']:.0f}bps" if latest.get("breakout_bps") is not None else "n/a"
+        action = "ENTER" if latest["signal"] else "NO"
+        lines.append(
+            f"{result['symbol']}: {action} | close {latest['close']:,.2f} | "
+            f"br {breakout} | bull {'Y' if latest['bull'] else 'N'} | "
+            f"{year_summary['year']} PnL ${year_summary['pnl']:,.2f}"
+        )
+    return "\n".join(lines)
 
 
 def send_telegram_message(token: str, chat_id: str, text: str) -> None:
@@ -150,8 +157,9 @@ def send_telegram_message(token: str, chat_id: str, text: str) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Daily Binance BTC paper runner")
-    p.add_argument("--symbol", default="BTCUSDT")
+    p = argparse.ArgumentParser(description="Daily Binance crypto paper runner")
+    p.add_argument("--symbol", default=None, help="Run one symbol only; overrides --symbols")
+    p.add_argument("--symbols", default=",".join(LIVE_SYMBOLS), help="Comma-separated symbols for portfolio tracking")
     p.add_argument("--base-url", default="https://api.binance.com")
     p.add_argument("--start", default="2018-01-01")
     p.add_argument("--end", default=None)
@@ -164,16 +172,17 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def main() -> None:
-    args = parse_args()
-    state_dir = Path(args.state_dir)
-    state_path = state_dir / "state.json"
-    trades_path = state_dir / "trades.csv"
-    equity_path = state_dir / "equity.csv"
-    log_path = state_dir / "run_log.csv"
+def run_symbol(args: argparse.Namespace, symbol: str, state_dir: Path, log_path: Path) -> dict[str, Any]:
+    symbol_dir = state_dir / symbol.upper()
+    state_path = symbol_dir / "state.json"
+    trades_path = symbol_dir / "trades.csv"
+    equity_path = symbol_dir / "equity.csv"
 
     previous = load_previous_state(state_path)
-    raw = fetch_binance_daily(args.symbol, args.start, args.end, args.base_url)
+    if not previous and symbol.upper() == "BTCUSDT":
+        previous = load_previous_state(state_dir / "state.json")
+    raw = fetch_binance_daily(symbol, args.start, args.end, args.base_url)
+    strat_cfg = live_strategy_config(symbol)
     sim_cfg = SimConfig(
         source="binance",
         data_start=args.start,
@@ -188,7 +197,6 @@ def main() -> None:
         write_files=False,
         out_dir=Path("."),
     )
-    strat_cfg = live_strategy_config()
 
     df = add_indicators(raw, strat_cfg)
     trades, curve, summary = simulate_account(df, sim_cfg=sim_cfg, strat_cfg=strat_cfg)
@@ -199,21 +207,53 @@ def main() -> None:
 
     if state_written:
         write_state(state_path, trades_path, equity_path, trades, curve, summary, latest)
-        append_run_log(log_path, event=event, symbol=args.symbol, summary=summary, latest=latest)
+        append_run_log(log_path, event=event, symbol=symbol, summary=summary, latest=latest)
 
-    print_bot_report(args.symbol, df, trades, curve, summary, latest, state_path, state_written)
+    print_bot_report(symbol, df, trades, curve, summary, latest, strat_cfg, state_path, state_written)
     print("-" * 92)
     print(f"  Daily event: {event}")
     print(f"  Fake equity: ${fmt(summary['final_equity'])}")
+    print(f"  Current-year PnL: ${fmt(year_summary['pnl'])}")
     print(f"  Next action: {'PAPER ENTER LONG' if latest['signal'] else 'NO TRADE'}")
     if state_written:
         print(f"  Run log: {log_path}")
     print("-" * 92)
 
+    return {
+        "symbol": symbol.upper(),
+        "event": event,
+        "summary": summary,
+        "latest": latest,
+        "year_summary": year_summary,
+        "state_path": state_path,
+    }
+
+
+def main() -> None:
+    args = parse_args()
+    symbols = parse_symbols(args)
+    state_dir = Path(args.state_dir)
+    log_path = state_dir / "run_log.csv"
+    results = [run_symbol(args, symbol, state_dir, log_path) for symbol in symbols]
+
+    print("=" * 92)
+    print("  MULTI-SYMBOL DAILY SUMMARY")
+    print("=" * 92)
+    for result in results:
+        latest = result["latest"]
+        year_summary = result["year_summary"]
+        breakout = f"{latest['breakout_bps']:.0f}bps" if latest.get("breakout_bps") is not None else "n/a"
+        print(
+            f"  {result['symbol']:8} signal={'YES' if latest['signal'] else 'NO ':3} "
+            f"bull={'YES' if latest['bull'] else 'NO ':3} breakout={breakout:>6} "
+            f"year_pnl=${fmt(year_summary['pnl']):>10} event={result['event']}"
+        )
+    print("=" * 92)
+
     if args.no_telegram:
         print("  Telegram notification disabled (--no-telegram)")
     elif args.telegram_token and args.telegram_chat_id:
-        message = build_telegram_message(event=event, symbol=args.symbol, year_summary=year_summary, latest=latest)
+        message = build_telegram_message(results=results)
         try:
             send_telegram_message(args.telegram_token, args.telegram_chat_id, message)
             print("  Telegram notification sent")

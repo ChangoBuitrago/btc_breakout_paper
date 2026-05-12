@@ -6,11 +6,11 @@ Queries Binance public BTCUSDT daily candles and replays the live rule in a
 fake account. It never places real orders.
 
 Live rule:
-  Signal: close[t] > prior 15-day close high + 100 bps
-  Filter: breakout size <= 225 bps
+  Signal: close[t] > prior close high + configured buffer
+  Filter: breakout size <= configured exhaustion cap
   Regime: close[t] > 200-day SMA
   Entry:  next day's open
-  Exit:   close after 5 trading days
+  Exit:   close after configured hold period
   Size:   min(0.75x, 1.50% / 20-day daily realized vol)
 """
 
@@ -45,15 +45,23 @@ BINANCE_BASE_URL_FALLBACKS = (
     "https://api.binance.com",
     "https://data-api.binance.vision",
 )
+LIVE_SYMBOLS = ("BTCUSDT", "BNBUSDT", "ETHUSDT", "ETCUSDT")
+LIVE_STRATEGY_PARAMS: dict[str, dict[str, float | int | str]] = {
+    "BTCUSDT": {"lookback": 15, "buffer_bps": 100.0, "max_breakout_bps": 225.0, "hold_days": 5},
+    "BNBUSDT": {"lookback": 15, "buffer_bps": 100.0, "max_breakout_bps": 400.0, "hold_days": 7},
+    "ETHUSDT": {"lookback": 10, "buffer_bps": 150.0, "max_breakout_bps": 300.0, "hold_days": 10},
+    "ETCUSDT": {"lookback": 30, "buffer_bps": 100.0, "max_breakout_bps": 400.0, "hold_days": 5},
+}
 
 
-def live_strategy_config() -> StrategyConfig:
+def live_strategy_config(symbol: str = "BTCUSDT") -> StrategyConfig:
+    params = LIVE_STRATEGY_PARAMS.get(symbol.upper(), LIVE_STRATEGY_PARAMS["BTCUSDT"])
     return StrategyConfig(
-        lookback=15,
-        buffer_bps=100.0,
-        max_breakout_bps=225.0,
+        lookback=int(params["lookback"]),
+        buffer_bps=float(params["buffer_bps"]),
+        max_breakout_bps=float(params["max_breakout_bps"]),
         trend_mode="bull_only",
-        hold_days=5,
+        hold_days=int(params["hold_days"]),
         trail_atr=0.0,
         fee_bps=10.0,
         vol_target=0.015,
@@ -156,15 +164,20 @@ def print_bot_report(
     curve: pd.DataFrame,
     summary: dict[str, Any],
     latest: dict[str, Any],
+    strat_cfg: StrategyConfig,
     state_path: Path,
     state_written: bool,
 ) -> None:
     print("=" * 92)
-    print("  BTC BREAKOUT BINANCE PAPER BOT")
+    print("  CRYPTO BREAKOUT BINANCE PAPER BOT")
     print("=" * 92)
     print(f"  Symbol: {symbol.upper()}  |  Source: Binance public 1d klines")
     print(f"  Data:   {df.index[0].date()} -> {df.index[-1].date()} rows={len(df):,}")
-    print("  Rule:   bull_only, 15d breakout + 100bps, max breakout 225bps, hold=5")
+    print(
+        f"  Rule:   {strat_cfg.trend_mode}, {strat_cfg.lookback}d breakout "
+        f"+ {strat_cfg.buffer_bps:.0f}bps, max breakout {strat_cfg.max_breakout_bps:.0f}bps, "
+        f"hold={strat_cfg.hold_days}"
+    )
     print("  Orders: PAPER ONLY - no real exchange orders are sent")
     print("-" * 92)
     print(f"  Final fake equity: ${fmt(summary['final_equity'])}")
@@ -234,7 +247,7 @@ def main() -> None:
         write_files=False,
         out_dir=Path("."),
     )
-    strat_cfg = live_strategy_config()
+    strat_cfg = live_strategy_config(args.symbol)
     df = add_indicators(raw, strat_cfg)
     trades, curve, summary = simulate_account(df, sim_cfg=sim_cfg, strat_cfg=strat_cfg)
     latest = latest_signal_report(df, strat_cfg)
@@ -243,7 +256,7 @@ def main() -> None:
     state_written = not args.no_write
     if state_written:
         write_state(state_path, Path(args.trades_path), Path(args.equity_path), trades, curve, summary, latest)
-    print_bot_report(args.symbol, df, trades, curve, summary, latest, state_path, state_written)
+    print_bot_report(args.symbol, df, trades, curve, summary, latest, strat_cfg, state_path, state_written)
 
 
 if __name__ == "__main__":
