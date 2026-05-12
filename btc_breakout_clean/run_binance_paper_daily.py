@@ -144,21 +144,53 @@ def parse_symbols(args: argparse.Namespace) -> list[str]:
     return symbols
 
 
+def fmt_signed_money(value: float) -> str:
+    sign = "+" if value >= 0 else "-"
+    return f"{sign}${abs(value):,.0f}"
+
+
+def signal_status(latest: dict[str, Any], strat_cfg: Any) -> str:
+    if latest["signal"]:
+        return "ENTER next open"
+    if not latest.get("regime_on", latest["bull"]):
+        if latest.get("breakout_bps") is None:
+            return "regime off"
+        distance_bps = float(strat_cfg.buffer_bps) - float(latest["breakout_bps"])
+        return f"regime off, needs +{max(distance_bps, 0.0):.0f} bps"
+    if latest.get("prior_high") is None or latest.get("breakout_bps") is None:
+        return "warming up"
+    breakout_bps = float(latest["breakout_bps"])
+    if breakout_bps < float(strat_cfg.buffer_bps):
+        return f"no breakout, needs +{float(strat_cfg.buffer_bps) - breakout_bps:.0f} bps"
+    if strat_cfg.max_breakout_bps is not None and breakout_bps > float(strat_cfg.max_breakout_bps):
+        return f"too stretched, {breakout_bps:.0f}/{float(strat_cfg.max_breakout_bps):.0f} bps"
+    return "blocked by filters"
+
+
 def build_telegram_message(*, results: list[dict[str, Any]]) -> str:
     date = results[0]["latest"]["signal_date"][:10] if results else "n/a"
-    total_equity = sum(float(result["summary"]["final_equity"]) for result in results)
+    starting_equity = sum(float(result["equity"]) for result in results)
     total_year_pnl = sum(float(result["year_summary"]["pnl"]) for result in results)
-    lines = [f"BTC+metals paper | {date}", f"Equity ${total_equity:,.2f} | YTD PnL ${total_year_pnl:,.2f}"]
+    year = results[0]["year_summary"]["year"] if results else pd.Timestamp.utcnow().year
+    signal_date = pd.Timestamp(results[0]["latest"]["signal_date"]) if results else pd.Timestamp.utcnow()
+    year_start = pd.Timestamp(f"{year}-01-01", tz="UTC")
+    elapsed_years = max((signal_date - year_start).days / 365.25, 1e-9)
+    year_return = total_year_pnl / starting_equity if starting_equity else 0.0
+    annualized = 100.0 * ((1.0 + year_return) ** (1.0 / elapsed_years) - 1.0) if year_return > -1.0 else -100.0
+    entries = [result["symbol"] for result in results if result["latest"]["signal"]]
+    next_action = f"ENTER {', '.join(entries)}" if entries else "no new entries"
+    lines = [f"BTC+metals paper - {date}", f"{next_action} today.", ""]
     for result in results:
         latest = result["latest"]
+        strat_cfg = result["strat_cfg"]
         year_summary = result["year_summary"]
-        breakout = f"{latest['breakout_bps']:.0f}bps" if latest.get("breakout_bps") is not None else "n/a"
-        action = "ENTER" if latest["signal"] else "NO"
+        pnl = float(year_summary["pnl"])
+        contribution = 100.0 * pnl / total_year_pnl if total_year_pnl else 0.0
         lines.append(
-            f"{result['symbol']}: {action} | close {latest['close']:,.2f} | "
-            f"br {breakout} | bull {'Y' if latest['bull'] else 'N'} | "
-            f"{year_summary['year']} PnL ${year_summary['pnl']:,.2f}"
+            f"{result['symbol']}: {signal_status(latest, strat_cfg)} | "
+            f"{year_summary['year']} {fmt_signed_money(pnl)} | contrib {contribution:.1f}%"
         )
+    lines.extend(["", f"Total {year}: {fmt_signed_money(total_year_pnl)} ({100.0 * year_return:+.1f}% YTD, {annualized:.1f}% ann.)"])
     return "\n".join(lines)
 
 
@@ -243,6 +275,7 @@ def run_symbol(args: argparse.Namespace, symbol: str, state_dir: Path, log_path:
 
     df = add_indicators(raw, strat_cfg)
     trades, curve, summary = simulate_account(df, sim_cfg=sim_cfg, strat_cfg=strat_cfg)
+    summary["start_date"] = curve["date"].iloc[0] if not curve.empty else pd.Timestamp(args.start, tz="UTC").isoformat()
     latest = latest_signal_report(df, strat_cfg)
     event = classify_event(previous, latest, trades)
     year_summary = summarize_signal_year(trades, curve, signal_date=latest["signal_date"], starting_equity=equity)
@@ -270,6 +303,7 @@ def run_symbol(args: argparse.Namespace, symbol: str, state_dir: Path, log_path:
         "year_summary": year_summary,
         "state_path": state_path,
         "equity": equity,
+        "strat_cfg": strat_cfg,
     }
 
 
