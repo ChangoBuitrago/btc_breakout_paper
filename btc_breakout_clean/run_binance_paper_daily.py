@@ -11,7 +11,10 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import sys
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -110,6 +113,48 @@ def append_run_log(
         writer.writerow(row)
 
 
+def build_telegram_message(
+    *,
+    event: str,
+    symbol: str,
+    summary: dict[str, Any],
+    latest: dict[str, Any],
+) -> str:
+    run_url = os.getenv("GITHUB_RUN_ID")
+    repo = os.getenv("GITHUB_REPOSITORY")
+    server = os.getenv("GITHUB_SERVER_URL", "https://github.com")
+    action_url = f"{server}/{repo}/actions/runs/{run_url}" if run_url and repo else "local run"
+    next_action = "PAPER ENTER LONG" if latest["signal"] else "NO TRADE"
+    breakout = f"{latest['breakout_bps']:.0f}bps" if latest.get("breakout_bps") is not None else "n/a"
+    sma = f"{latest['sma200']:,.2f}" if latest.get("sma200") is not None else "n/a"
+    return "\n".join(
+        [
+            f"BTC paper bot daily update ({symbol.upper()})",
+            f"Event: {event}",
+            f"Next action: {next_action}",
+            f"Signal date: {latest['signal_date'][:10]}",
+            f"Close: {latest['close']:,.2f}",
+            f"Prior high: {latest['prior_high']:,.2f}" if latest.get("prior_high") is not None else "Prior high: n/a",
+            f"Breakout: {breakout}",
+            f"SMA200: {sma}",
+            f"Bull regime: {'YES' if latest['bull'] else 'NO'}",
+            f"Fake equity: {summary['final_equity']:,.2f}",
+            f"Net PnL: {summary['net_pnl']:,.2f}",
+            f"Trades: {summary['trades']}",
+            f"PF: {summary['profit_factor']:.2f}",
+            f"Max DD: {summary['max_drawdown_pct']:.2f}%",
+            f"Run: {action_url}",
+        ]
+    )
+
+
+def send_telegram_message(token: str, chat_id: str, text: str) -> None:
+    payload = urllib.parse.urlencode({"chat_id": chat_id, "text": text}).encode("utf-8")
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    with urllib.request.urlopen(url, data=payload, timeout=20) as resp:
+        resp.read()
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Daily Binance BTC paper runner")
     p.add_argument("--symbol", default="BTCUSDT")
@@ -119,6 +164,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--equity", type=float, default=10_000.0)
     p.add_argument("--state-dir", default="btc_breakout_clean/paper_binance")
     p.add_argument("--no-write", action="store_true", help="Print only; do not write state/log files")
+    p.add_argument("--telegram-token", default=os.getenv("TELEGRAM_BOT_TOKEN"))
+    p.add_argument("--telegram-chat-id", default=os.getenv("TELEGRAM_CHAT_ID"))
+    p.add_argument("--no-telegram", action="store_true", help="Disable Telegram notification even if configured")
     return p.parse_args()
 
 
@@ -176,6 +224,19 @@ def main() -> None:
     print(f"  Next action: {'PAPER ENTER LONG' if latest['signal'] else 'NO TRADE'}")
     if state_written:
         print(f"  Run log: {log_path}")
+    print("-" * 92)
+
+    if args.no_telegram:
+        print("  Telegram notification disabled (--no-telegram)")
+    elif args.telegram_token and args.telegram_chat_id:
+        message = build_telegram_message(event=event, symbol=args.symbol, summary=summary, latest=latest)
+        try:
+            send_telegram_message(args.telegram_token, args.telegram_chat_id, message)
+            print("  Telegram notification sent")
+        except Exception as exc:
+            print(f"  Telegram notification failed: {type(exc).__name__}: {exc}")
+    else:
+        print("  Telegram not configured (set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)")
     print("-" * 92)
 
 

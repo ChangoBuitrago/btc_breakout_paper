@@ -53,9 +53,26 @@ Workflow: `.github/workflows/btc-binance-paper-daily.yml`
 - Can be triggered manually from the Actions tab.
 - Restores prior paper state from the Actions cache.
 - Uploads the paper state folder as an artifact.
+- Sends a Telegram daily update when `TELEGRAM_BOT_TOKEN` and
+  `TELEGRAM_CHAT_ID` repository secrets are configured.
 
 If Binance blocks the default endpoint from GitHub runners, set repository
 variable `BINANCE_BASE_URL` to a compatible Binance spot API endpoint.
+
+## Telegram Alerts
+
+Create a Telegram bot with `@BotFather`, send it one message from your Telegram
+account, then set these GitHub repository secrets:
+
+- `TELEGRAM_BOT_TOKEN`: bot token from `@BotFather`.
+- `TELEGRAM_CHAT_ID`: your chat id or group chat id.
+
+The daily wrapper also works locally with environment variables:
+
+```bash
+TELEGRAM_BOT_TOKEN="..." TELEGRAM_CHAT_ID="..." \
+  python btc_breakout_clean/run_binance_paper_daily.py
+```
 
 ## Research Scripts
 

@@ -13,6 +13,8 @@ jobs:
       contents: read
     env:
       BINANCE_BASE_URL: ${{ vars.BINANCE_BASE_URL || 'https://data-api.binance.vision' }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 
     steps:
       - name: Check out repository
@@ -46,3 +48,28 @@ jobs:
           name: btc-binance-paper-state
           path: btc_breakout_clean/paper_binance/
           retention-days: 90
+
+      - name: Notify Telegram on failure
+        if: failure()
+        run: |
+          python - <<'PY'
+          import os
+          import urllib.parse
+          import urllib.request
+
+          token = os.getenv("TELEGRAM_BOT_TOKEN")
+          chat_id = os.getenv("TELEGRAM_CHAT_ID")
+          if not token or not chat_id:
+              print("Telegram not configured; skipping failure notification")
+              raise SystemExit(0)
+
+          repo = os.getenv("GITHUB_REPOSITORY")
+          run_id = os.getenv("GITHUB_RUN_ID")
+          server = os.getenv("GITHUB_SERVER_URL", "https://github.com")
+          url = f"{server}/{repo}/actions/runs/{run_id}"
+          text = f"BTC paper bot workflow FAILED\nRepo: {repo}\nRun: {url}"
+          payload = urllib.parse.urlencode({"chat_id": chat_id, "text": text}).encode("utf-8")
+          with urllib.request.urlopen(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, timeout=20) as resp:
+              resp.read()
+          print("Telegram failure notification sent")
+          PY
