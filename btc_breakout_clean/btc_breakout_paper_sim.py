@@ -30,6 +30,18 @@ import pandas as pd
 warnings.filterwarnings("ignore")
 
 DUKASCOPY_CHUNK_DAYS = 180
+TREND_MODE_CHOICES = (
+    "all",
+    "bull_only",
+    "bear_only",
+    "sma200",
+    "sma200_95",
+    "sma200_90",
+    "sma100",
+    "sma50",
+    "sma50_slope_up",
+    "sma200_slope_up",
+)
 
 
 @dataclass(frozen=True)
@@ -260,18 +272,41 @@ def add_indicators(df: pd.DataFrame, cfg: StrategyConfig) -> pd.DataFrame:
     out["ret"] = out["close"].pct_change()
     out["vol20"] = out["ret"].rolling(20).std()
     out["atr14"] = out["close"].pct_change().abs().rolling(14).mean()
+    out["sma50"] = out["close"].rolling(50).mean()
+    out["sma100"] = out["close"].rolling(100).mean()
     out["sma200"] = out["close"].rolling(200).mean()
+    out["sma50_slope20"] = out["sma50"] - out["sma50"].shift(20)
+    out["sma200_slope20"] = out["sma200"] - out["sma200"].shift(20)
     out["prior_high"] = out["close"].rolling(cfg.lookback).max().shift(1)
     out["breakout_bps"] = 10_000.0 * (out["close"] / out["prior_high"] - 1.0)
     out["signal"] = out["close"] > out["prior_high"] * (1.0 + cfg.buffer_bps / 10_000.0)
     if cfg.max_breakout_bps is not None:
         out["signal"] &= out["breakout_bps"] <= cfg.max_breakout_bps
-    out["bull"] = out["close"] > out["sma200"]
+    sma200_bull = out["close"] > out["sma200"]
+    out["bull"] = sma200_bull
     out["bear"] = out["close"] < out["sma200"]
-    if cfg.trend_mode == "bull_only":
-        out["signal"] &= out["bull"]
+    if cfg.trend_mode in {"bull_only", "sma200"}:
+        regime = sma200_bull
     elif cfg.trend_mode == "bear_only":
-        out["signal"] &= out["bear"]
+        regime = out["bear"]
+    elif cfg.trend_mode == "sma200_95":
+        regime = out["close"] > out["sma200"] * 0.95
+    elif cfg.trend_mode == "sma200_90":
+        regime = out["close"] > out["sma200"] * 0.90
+    elif cfg.trend_mode == "sma100":
+        regime = out["close"] > out["sma100"]
+    elif cfg.trend_mode == "sma50":
+        regime = out["close"] > out["sma50"]
+    elif cfg.trend_mode == "sma50_slope_up":
+        regime = (out["close"] > out["sma50"]) & (out["sma50_slope20"] > 0)
+    elif cfg.trend_mode == "sma200_slope_up":
+        regime = out["sma200_slope20"] > 0
+    elif cfg.trend_mode == "all":
+        regime = pd.Series(True, index=out.index)
+    else:
+        raise ValueError(f"Unsupported trend_mode: {cfg.trend_mode}")
+    out["regime_on"] = regime.fillna(False)
+    out["signal"] &= out["regime_on"]
     out["signal"] = out["signal"].fillna(False)
     return out
 
@@ -521,6 +556,7 @@ def latest_signal_report(df: pd.DataFrame, strat_cfg: StrategyConfig) -> dict[st
         "breakout_bps": breakout_bps,
         "sma200": float(last["sma200"]) if np.isfinite(last["sma200"]) else None,
         "bull": bool(last["bull"]),
+        "regime_on": bool(last.get("regime_on", last["bull"])),
         "trend_mode": strat_cfg.trend_mode,
         "vol20": rv if np.isfinite(rv) else None,
         "signal": bool(last["signal"]),
@@ -649,6 +685,8 @@ def print_latest_signal(latest: dict[str, Any]) -> None:
     print(f"  Breakout size: {breakout}")
     sma = fmt(latest["sma200"]) if latest["sma200"] is not None else "n/a"
     print(f"  SMA200: {sma}  |  bull regime: {'YES' if latest['bull'] else 'NO'}")
+    if latest.get("trend_mode") not in {"bull_only", "sma200"}:
+        print(f"  Active regime ({latest['trend_mode']}): {'YES' if latest.get('regime_on') else 'NO'}")
     print(f"  Signal for next UTC day: {'YES' if latest['signal'] else 'NO'}")
     if latest["signal"]:
         print(f"  Next fake position size: {latest['next_size_frac']:.2%} of initial equity")
@@ -776,7 +814,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--lookback", type=int, default=15)
     p.add_argument("--buffer-bps", type=float, default=100.0)
     p.add_argument("--max-breakout-bps", type=float, default=225.0, help="Skip exhausted breakouts above this size; <=0 disables")
-    p.add_argument("--trend-mode", choices=("all", "bull_only", "bear_only"), default="bull_only")
+    p.add_argument("--trend-mode", choices=TREND_MODE_CHOICES, default="bull_only")
     p.add_argument("--hold-days", type=int, default=5, help="Exit at close after this many trading days")
     p.add_argument("--trail-atr", type=float, default=0.0, help="ATR14 trailing exit multiple; <=0 disables")
     p.add_argument("--fee-bps", type=float, default=10.0)

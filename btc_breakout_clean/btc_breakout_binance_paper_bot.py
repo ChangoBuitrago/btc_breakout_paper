@@ -22,6 +22,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +34,7 @@ sys.path.insert(0, str(HERE))
 from btc_breakout_paper_sim import (  # noqa: E402
     SimConfig,
     StrategyConfig,
+    TREND_MODE_CHOICES,
     add_indicators,
     fmt,
     fmt_pf,
@@ -192,6 +194,8 @@ def print_bot_report(
     print(f"  Breakout size: {latest['breakout_bps']:.0f}bps" if latest.get("breakout_bps") is not None else "  Breakout size: n/a")
     print(f"  SMA200: {fmt(latest['sma200']) if latest['sma200'] is not None else 'n/a'}")
     print(f"  Bull regime: {'YES' if latest['bull'] else 'NO'}")
+    if latest.get("trend_mode") not in {"bull_only", "sma200"}:
+        print(f"  Active regime ({latest['trend_mode']}): {'YES' if latest.get('regime_on') else 'NO'}")
     print(f"  Signal for next UTC day: {'YES' if latest['signal'] else 'NO'}")
     if latest["signal"]:
         print(f"  Next fake position size: {latest['next_size_frac']:.2%} of initial equity")
@@ -223,6 +227,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--start", default="2018-01-01")
     p.add_argument("--end", default=None)
     p.add_argument("--equity", type=float, default=10_000.0)
+    p.add_argument("--trend-mode", choices=TREND_MODE_CHOICES, default=None, help="Override the symbol's configured regime filter")
     p.add_argument("--state-path", default="btc_breakout_clean/paper_binance/state.json")
     p.add_argument("--trades-path", default="btc_breakout_clean/paper_binance/trades.csv")
     p.add_argument("--equity-path", default="btc_breakout_clean/paper_binance/equity.csv")
@@ -248,6 +253,8 @@ def main() -> None:
         out_dir=Path("."),
     )
     strat_cfg = live_strategy_config(args.symbol)
+    if args.trend_mode:
+        strat_cfg = replace(strat_cfg, trend_mode=args.trend_mode)
     df = add_indicators(raw, strat_cfg)
     trades, curve, summary = simulate_account(df, sim_cfg=sim_cfg, strat_cfg=strat_cfg)
     latest = latest_signal_report(df, strat_cfg)

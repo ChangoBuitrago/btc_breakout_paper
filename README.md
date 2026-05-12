@@ -40,6 +40,12 @@ The daily wrapper is designed for cron or GitHub Actions:
 python btc_breakout_clean/run_binance_paper_daily.py
 ```
 
+To test a regime-filter variant without changing the live defaults:
+
+```bash
+python btc_breakout_clean/run_binance_paper_daily.py --trend-mode sma50_slope_up --no-write --no-telegram
+```
+
 It writes:
 
 - `btc_breakout_clean/paper_binance/<SYMBOL>/state.json`

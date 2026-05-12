@@ -15,6 +15,7 @@ import os
 import sys
 import urllib.parse
 import urllib.request
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,7 @@ from btc_breakout_binance_paper_bot import (  # noqa: E402
 )
 from btc_breakout_paper_sim import (  # noqa: E402
     SimConfig,
+    TREND_MODE_CHOICES,
     add_indicators,
     fmt,
     latest_signal_report,
@@ -164,6 +166,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--start", default="2018-01-01")
     p.add_argument("--end", default=None)
     p.add_argument("--equity", type=float, default=10_000.0)
+    p.add_argument("--trend-mode", choices=TREND_MODE_CHOICES, default=None, help="Override each symbol's configured regime filter")
     p.add_argument("--state-dir", default="btc_breakout_clean/paper_binance")
     p.add_argument("--no-write", action="store_true", help="Print only; do not write state/log files")
     p.add_argument("--telegram-token", default=os.getenv("TELEGRAM_BOT_TOKEN"))
@@ -183,6 +186,8 @@ def run_symbol(args: argparse.Namespace, symbol: str, state_dir: Path, log_path:
         previous = load_previous_state(state_dir / "state.json")
     raw = fetch_binance_daily(symbol, args.start, args.end, args.base_url)
     strat_cfg = live_strategy_config(symbol)
+    if args.trend_mode:
+        strat_cfg = replace(strat_cfg, trend_mode=args.trend_mode)
     sim_cfg = SimConfig(
         source="binance",
         data_start=args.start,
