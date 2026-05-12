@@ -179,7 +179,7 @@ def build_telegram_message(*, results: list[dict[str, Any]]) -> str:
     annualized = 100.0 * ((1.0 + year_return) ** (1.0 / elapsed_years) - 1.0) if year_return > -1.0 else -100.0
     entries = [result["symbol"] for result in results if result["latest"]["signal"]]
     next_action = f"ENTER {', '.join(entries)}" if entries else "no new entries"
-    lines = [f"BTC+metals paper - {date}", f"{next_action} today.", ""]
+    lines = ["Breakout Paper Portfolio", f"{date}: {next_action} today.", f"PnL year: {year}", ""]
     for result in results:
         latest = result["latest"]
         strat_cfg = result["strat_cfg"]
@@ -188,7 +188,7 @@ def build_telegram_message(*, results: list[dict[str, Any]]) -> str:
         contribution = 100.0 * pnl / total_year_pnl if total_year_pnl else 0.0
         lines.append(
             f"{result['symbol']}: {signal_status(latest, strat_cfg)} | "
-            f"{year_summary['year']} {fmt_signed_money(pnl)} | contrib {contribution:.1f}%"
+            f"{fmt_signed_money(pnl)} | {contribution:.1f}%"
         )
     lines.extend(["", f"Total {year}: {fmt_signed_money(total_year_pnl)} ({100.0 * year_return:+.1f}% YTD, {annualized:.1f}% ann.)"])
     return "\n".join(lines)
