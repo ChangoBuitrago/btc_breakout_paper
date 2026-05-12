@@ -15,7 +15,7 @@ Tracked sleeves and fitted paper rules:
 
 - `BTCUSD`: `$10k`, Dukascopy, 15d breakout, 100 bps buffer, 225 bps cap, 5-day hold, 10 bps costs.
 - `XAUUSD`: `$10k`, Dukascopy, 30d breakout, 100 bps buffer, 225 bps cap, `sma200_95`, 15-day hold, 2 bps costs.
-- `XAGUSD`: `$10k`, Dukascopy, 30d breakout, 100 bps buffer, 225 bps cap, `sma200_95`, 15-day hold, 2 bps costs.
+- `XAGUSD`: `$10k`, Dukascopy, 30d breakout, 100 bps buffer, 225 bps cap, `bull_only`, 15-day hold, 2 bps costs.
 - `XCUUSD`: `$10k`, Dukascopy, 15d breakout, 100 bps buffer, 225 bps cap, 5-day hold, 10 bps costs.
 
 ## Quick Start

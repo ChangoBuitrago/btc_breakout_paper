@@ -73,7 +73,7 @@ LIVE_STRATEGY_PARAMS: dict[str, dict[str, float | int | str | bool]] = {
         "lookback": 30,
         "buffer_bps": 100.0,
         "max_breakout_bps": 225.0,
-        "trend_mode": "sma200_95",
+        "trend_mode": "bull_only",
         "hold_days": 15,
         "fee_bps": 2.0,
         "compound": True,
