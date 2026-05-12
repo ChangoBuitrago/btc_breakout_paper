@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -39,9 +40,13 @@ from btc_breakout_paper_sim import (  # noqa: E402
 )
 
 DEFAULT_BINANCE_BASE_URL = "https://api.binance.com"
+BINANCE_BASE_URL_FALLBACKS = (
+    "https://api.binance.com",
+    "https://data-api.binance.vision",
+)
 
 
-def fetch_binance_daily(symbol: str, start: str, end: str | None, base_url: str = DEFAULT_BINANCE_BASE_URL) -> pd.DataFrame:
+def _fetch_binance_daily_from_base(symbol: str, start: str, end: str | None, base_url: str) -> pd.DataFrame:
     start_ms = int(pd.Timestamp(start, tz="UTC").timestamp() * 1000)
     end_ms = int(pd.Timestamp(end, tz="UTC").timestamp() * 1000) if end else None
     rows: list[list[Any]] = []
@@ -88,6 +93,22 @@ def fetch_binance_daily(symbol: str, start: str, end: str | None, base_url: str 
         }
     )
     return df.set_index("date").sort_index()
+
+
+def fetch_binance_daily(symbol: str, start: str, end: str | None, base_url: str = DEFAULT_BINANCE_BASE_URL) -> pd.DataFrame:
+    base_urls = [base_url]
+    base_urls.extend(url for url in BINANCE_BASE_URL_FALLBACKS if url not in base_urls)
+    errors: list[str] = []
+    for candidate in base_urls:
+        try:
+            return _fetch_binance_daily_from_base(symbol, start, end, candidate)
+        except urllib.error.HTTPError as exc:
+            errors.append(f"{candidate} -> HTTP {exc.code}")
+            if exc.code not in {451, 403, 429}:
+                raise
+        except Exception as exc:
+            errors.append(f"{candidate} -> {type(exc).__name__}: {exc}")
+    raise RuntimeError(f"All Binance endpoints failed: {errors}")
 
 
 def write_state(
