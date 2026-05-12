@@ -155,14 +155,14 @@ def signal_status(latest: dict[str, Any], strat_cfg: StrategyConfig) -> str:
         if latest.get("breakout_bps") is None:
             return "regime off"
         distance_bps = float(strat_cfg.buffer_bps) - float(latest["breakout_bps"])
-        return f"regime off, needs +{max(distance_bps, 0.0):.0f} bps"
+        return f"regime off, +{max(distance_bps, 0.0):.0f} bps to signal"
     if latest.get("prior_high") is None or latest.get("breakout_bps") is None:
         return "warming up"
     breakout_bps = float(latest["breakout_bps"])
     if breakout_bps < float(strat_cfg.buffer_bps):
-        return f"no breakout, needs +{float(strat_cfg.buffer_bps) - breakout_bps:.0f} bps"
+        return f"no breakout, +{float(strat_cfg.buffer_bps) - breakout_bps:.0f} bps to signal"
     if strat_cfg.max_breakout_bps is not None and breakout_bps > float(strat_cfg.max_breakout_bps):
-        return f"too stretched, {breakout_bps:.0f}/{float(strat_cfg.max_breakout_bps):.0f} bps"
+        return f"too stretched at {breakout_bps:.0f} bps"
     return "blocked by filters"
 
 
