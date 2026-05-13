@@ -1,7 +1,7 @@
 # Breakout Paper Bot
 
-Equal-weight **BTC + metals** paper portfolio (`BTCUSD`, `XAUUSD`, `XAGUSD`,
-`XCUUSD`) using public daily data. Never sends real orders.
+Equal-weight **crypto + metals** paper portfolio (`BTCUSD`, `ETHUSDT`, `BNBUSDT`,
+`XAUUSD`, `XAGUSD`, `XCUUSD`) using public daily data. Never sends real orders.
 
 ## Live Paper Rules
 
@@ -9,11 +9,13 @@ Equal-weight **BTC + metals** paper portfolio (`BTCUSD`, `XAUUSD`, `XAGUSD`,
 - Entry: next UTC daily open after the signal.
 - Sizing: `min(0.75x, 1.50% / 20-day daily realized vol)`.
 - Sizing base: current fake sleeve equity, compounded.
-- Account: `$40,000` total, split equally across four `$10k` sleeves.
+- Account: `$60,000` total, split equally across six `$10k` sleeves.
 
 Tracked sleeves and fitted paper rules:
 
-- `BTCUSD`: `$10k`, Dukascopy, 15d breakout, 100 bps buffer, 225 bps cap, 5-day hold, 10 bps costs.
+- `BTCUSD`: `$10k`, Dukascopy, 15d breakout, 125 bps buffer, 225 bps cap, `bull_only`, 10-day hold, 10 bps costs.
+- `ETHUSDT`: `$10k`, Binance, 10d breakout, 150 bps buffer, 225 bps cap, `bull_only`, 10-day hold, 10 bps costs.
+- `BNBUSDT`: `$10k`, Binance, 15d breakout, 125 bps buffer, 225 bps cap, `bull_only`, 10-day hold, 10 bps costs.
 - `XAUUSD`: `$10k`, Dukascopy, 30d breakout, 100 bps buffer, 225 bps cap, `sma200_95`, 15-day hold, 2 bps costs.
 - `XAGUSD`: `$10k`, Dukascopy, 30d breakout, 100 bps buffer, 225 bps cap, `bull_only`, 15-day hold, 2 bps costs.
 - `XCUUSD`: `$10k`, Dukascopy, 15d breakout, 100 bps buffer, 225 bps cap, 5-day hold, 10 bps costs.
@@ -71,7 +73,7 @@ Workflow: `.github/workflows/btc-binance-paper-daily.yml` (display name **Breako
 - Can be triggered manually from the Actions tab.
 - Restores prior paper state and Dukascopy cache from the Actions cache.
 - Uploads the paper state and cache folders as an artifact.
-- Tracks `BTCUSD`, `XAUUSD`, `XAGUSD`, and `XCUUSD` by default.
+- Tracks `BTCUSD`, `ETHUSDT`, `BNBUSDT`, `XAUUSD`, `XAGUSD`, and `XCUUSD` by default.
 - Sends one compact Telegram daily update when `TELEGRAM_BOT_TOKEN` and
   `TELEGRAM_CHAT_ID` repository secrets are configured.
 

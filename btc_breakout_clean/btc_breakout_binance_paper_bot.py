@@ -43,16 +43,38 @@ BINANCE_BASE_URL_FALLBACKS = (
     "https://api.binance.com",
     "https://data-api.binance.vision",
 )
-LIVE_SYMBOLS = ("BTCUSD", "XAUUSD", "XAGUSD", "XCUUSD")
+LIVE_SYMBOLS = ("BTCUSD", "ETHUSDT", "BNBUSDT", "XAUUSD", "XAGUSD", "XCUUSD")
 LIVE_STRATEGY_PARAMS: dict[str, dict[str, float | int | str | bool]] = {
     "BTCUSD": {
         "source": "dukascopy",
         "equity": 10_000.0,
         "lookback": 15,
-        "buffer_bps": 100.0,
+        "buffer_bps": 125.0,
         "max_breakout_bps": 225.0,
         "trend_mode": "bull_only",
-        "hold_days": 5,
+        "hold_days": 10,
+        "fee_bps": 10.0,
+        "compound": True,
+    },
+    "ETHUSDT": {
+        "source": "binance",
+        "equity": 10_000.0,
+        "lookback": 10,
+        "buffer_bps": 150.0,
+        "max_breakout_bps": 225.0,
+        "trend_mode": "bull_only",
+        "hold_days": 10,
+        "fee_bps": 10.0,
+        "compound": True,
+    },
+    "BNBUSDT": {
+        "source": "binance",
+        "equity": 10_000.0,
+        "lookback": 15,
+        "buffer_bps": 125.0,
+        "max_breakout_bps": 225.0,
+        "trend_mode": "bull_only",
+        "hold_days": 10,
         "fee_bps": 10.0,
         "compound": True,
     },
@@ -89,10 +111,8 @@ LIVE_STRATEGY_PARAMS: dict[str, dict[str, float | int | str | bool]] = {
         "fee_bps": 10.0,
         "compound": True,
     },
-    # Kept for manual crypto-only checks with btc_breakout_binance_paper_bot.py.
-    "BTCUSDT": {"source": "binance", "lookback": 15, "buffer_bps": 100.0, "max_breakout_bps": 225.0, "hold_days": 5},
-    "BNBUSDT": {"source": "binance", "lookback": 15, "buffer_bps": 100.0, "max_breakout_bps": 400.0, "hold_days": 7},
-    "ETHUSDT": {"source": "binance", "lookback": 10, "buffer_bps": 150.0, "max_breakout_bps": 300.0, "hold_days": 10},
+    # Aliases for manual single-symbol checks.
+    "BTCUSDT": {"source": "binance", "lookback": 15, "buffer_bps": 125.0, "max_breakout_bps": 225.0, "hold_days": 10},
     "ETCUSDT": {"source": "binance", "lookback": 30, "buffer_bps": 100.0, "max_breakout_bps": 400.0, "hold_days": 5},
 }
 
