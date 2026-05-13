@@ -1,23 +1,25 @@
 // This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
 //@version=5
-// Paper bot: same signal definition as btc_breakout_paper_sim.add_indicators + regime filter.
-// Use **1D** timeframe. Compare the **last closed daily bar** to your Telegram `Closed daily bar:` date.
-// Chart symbol must match what you trade (TV may differ from Dukascopy OHLC → small bar differences possible).
-indicator("Paper breakout signal check", shorttitle="PaperSig", overlay=true)
+// Mirrors btc_breakout_paper_sim: signal at close, enter next open, fixed hold, exit at close.
+// Use 1D. Preset params match LIVE_STRATEGY_PARAMS in btc_breakout_binance_paper_bot.py.
+indicator("Paper breakout check", shorttitle="PaperSig", overlay=true, max_labels_count=500)
 
-preset = input.string("XCUUSD", "Sleeve preset (matches LIVE_STRATEGY_PARAMS)", options=["Custom", "BTCUSD", "XAUUSD", "XAGUSD", "XCUUSD"])
+preset = input.string("XCUUSD", "Sleeve preset", options=["Custom", "BTCUSD", "XAUUSD", "XAGUSD", "XCUUSD"])
+show_prior_high = input.bool(true, "Plot prior-high level")
+show_trade_bg = input.bool(true, "Shade bars in paper trade")
 
-lookback_c = input.int(15, "Lookback (Custom only)", minval=1)
-buffer_c = input.float(100.0, "Buffer bps (Custom only)", step=1)
-max_bb_c = input.float(225.0, "Max breakout bps, 0=off (Custom only)", step=1)
-trend_c = input.string("bull_only", "Trend mode (Custom only)", options=["all", "bull_only", "bear_only", "sma200", "sma200_95", "sma200_90", "sma100", "sma50", "sma50_slope_up", "sma200_slope_up"])
+lookback_c = input.int(15, "Lookback (Custom)", minval=1)
+buffer_c = input.float(100.0, "Buffer bps (Custom)", step=1)
+max_bb_c = input.float(225.0, "Max breakout bps, 0=off (Custom)", step=1)
+hold_c = input.int(5, "Hold days (Custom)", minval=1)
+trend_c = input.string("bull_only", "Trend (Custom)", options=["all", "bull_only", "bear_only", "sma200", "sma200_95", "sma200_90", "sma100", "sma50", "sma50_slope_up", "sma200_slope_up"])
 
 lookback = preset == "Custom" ? lookback_c : (preset == "BTCUSD" or preset == "XCUUSD" ? 15 : 30)
 buffer_bps = preset == "Custom" ? buffer_c : 100.0
 max_breakout_bps = preset == "Custom" ? max_bb_c : 225.0
+hold_days = preset == "Custom" ? hold_c : (preset == "BTCUSD" or preset == "XCUUSD" ? 5 : 15)
 trend_mode = preset == "Custom" ? trend_c : preset == "XAUUSD" ? "sma200_95" : "bull_only"
 
-// prior_high = max(close over prior `lookback` bars, excluding current close) — same as pandas rolling().shift(1)
 prior_high = ta.highest(close, lookback)[1]
 breakout_bps = na(prior_high) or prior_high == 0.0 ? na : 10000.0 * (close / prior_high - 1.0)
 
@@ -48,20 +50,40 @@ regime_on = switch trend_mode
 
 signal = raw_breakout and not_exhausted and regime_on
 
-// Optional: mark next-open intent (visual only; no broker orders)
-plotshape(signal, title="Signal (enter next open in paper sim)", style=shape.triangleup, location=location.belowbar, size=size.small, color=color.new(color.teal, 0), text="SIG")
+// Paper book: signal on prior close → enter this bar (next open); exit after hold_days bars in position (at close).
+var bool in_pos = false
+var int hold_count = 0
+var float entry_px = na
 
-var table t = table.new(position.top_right, 2, 6, border_width=1)
+entered = signal[1] and not in_pos
+exited = false
+
+if entered
+    in_pos := true
+    hold_count := 1
+    entry_px := open
+else if in_pos
+    hold_count += 1
+    if hold_count >= hold_days
+        in_pos := false
+        exited := true
+        hold_count := 0
+        entry_px := na
+
+in_trade_bar = in_pos or exited
+unreal_pct = in_pos and not na(entry_px) and entry_px != 0.0 ? 100.0 * (close / entry_px - 1.0) : na
+
+bgcolor(show_trade_bg and in_trade_bar ? color.new(color.teal, 88) : na, title="In trade")
+plot(show_prior_high ? prior_high : na, "Prior high", color=color.new(color.orange, 35), linewidth=1, style=plot.style_stepline)
+
+plotshape(signal and not signal[1], title="Signal (close)", style=shape.circle, location=location.belowbar, size=size.tiny, color=color.new(color.gray, 0), text="SIG")
+plotshape(entered, title="Entry (next open)", style=shape.triangleup, location=location.belowbar, size=size.small, color=color.new(color.teal, 0), text="IN")
+plotshape(exited, title="Exit (hold done)", style=shape.triangledown, location=location.abovebar, size=size.small, color=color.new(color.red, 0), text="OUT")
+
+var label status = na
 if barstate.islast
-    table.cell(t, 0, 0, "Preset", text_color=color.white, bgcolor=color.gray)
-    table.cell(t, 1, 0, preset, text_color=color.white, bgcolor=color.gray)
-    table.cell(t, 0, 1, "lookback", bgcolor=color.new(color.gray, 70))
-    table.cell(t, 1, 1, str.tostring(lookback), bgcolor=color.new(color.gray, 70))
-    table.cell(t, 0, 2, "trend", bgcolor=color.new(color.gray, 70))
-    table.cell(t, 1, 2, trend_mode, bgcolor=color.new(color.gray, 70))
-    table.cell(t, 0, 3, "regime_on", bgcolor=color.new(color.gray, 70))
-    table.cell(t, 1, 3, regime_on ? "yes" : "no", bgcolor=color.new(color.gray, 70))
-    table.cell(t, 0, 4, "signal", bgcolor=color.new(color.gray, 70))
-    table.cell(t, 1, 4, signal ? "YES" : "no", bgcolor=signal ? color.new(color.teal, 60) : color.new(color.gray, 70))
-    table.cell(t, 0, 5, "breakout_bps", bgcolor=color.new(color.gray, 70))
-    table.cell(t, 1, 5, na(breakout_bps) ? "na" : str.tostring(breakout_bps, "#.##"), bgcolor=color.new(color.gray, 70))
+    label.delete(status)
+    pending = signal and not in_pos
+    status_txt = pending ? "Pending: signal on this close → enter next open" : in_pos ? "In trade day " + str.tostring(hold_count) + "/" + str.tostring(hold_days) + " | " + str.tostring(unreal_pct, "#.##") + "% vs entry" : "Flat"
+    detail = "preset " + preset + " | lb " + str.tostring(lookback) + " | hold " + str.tostring(hold_days) + " | " + trend_mode + "\nregime " + (regime_on ? "on" : "off") + " | signal " + (signal ? "YES" : "no") + " | bps " + (na(breakout_bps) ? "na" : str.tostring(breakout_bps, "#.0"))
+    status := label.new(bar_index, high, status_txt + "\n" + detail, style=label.style_label_lower_left, color=color.new(color.black, 15), textcolor=color.white, size=size.small)
