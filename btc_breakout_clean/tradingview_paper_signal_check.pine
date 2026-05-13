@@ -1,0 +1,67 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+//@version=5
+// Paper bot: same signal definition as btc_breakout_paper_sim.add_indicators + regime filter.
+// Use **1D** timeframe. Compare the **last closed daily bar** to your Telegram `Closed daily bar:` date.
+// Chart symbol must match what you trade (TV may differ from Dukascopy OHLC → small bar differences possible).
+indicator("Paper breakout signal check", shorttitle="PaperSig", overlay=true)
+
+preset = input.string("XCUUSD", "Sleeve preset (matches LIVE_STRATEGY_PARAMS)", options=["Custom", "BTCUSD", "XAUUSD", "XAGUSD", "XCUUSD"])
+
+lookback_c = input.int(15, "Lookback (Custom only)", minval=1)
+buffer_c = input.float(100.0, "Buffer bps (Custom only)", step=1)
+max_bb_c = input.float(225.0, "Max breakout bps, 0=off (Custom only)", step=1)
+trend_c = input.string("bull_only", "Trend mode (Custom only)", options=["all", "bull_only", "bear_only", "sma200", "sma200_95", "sma200_90", "sma100", "sma50", "sma50_slope_up", "sma200_slope_up"])
+
+lookback = preset == "Custom" ? lookback_c : (preset == "BTCUSD" or preset == "XCUUSD" ? 15 : 30)
+buffer_bps = preset == "Custom" ? buffer_c : 100.0
+max_breakout_bps = preset == "Custom" ? max_bb_c : 225.0
+trend_mode = preset == "Custom" ? trend_c : preset == "XAUUSD" ? "sma200_95" : "bull_only"
+
+// prior_high = max(close over prior `lookback` bars, excluding current close) — same as pandas rolling().shift(1)
+prior_high = ta.highest(close, lookback)[1]
+breakout_bps = na(prior_high) or prior_high == 0.0 ? na : 10000.0 * (close / prior_high - 1.0)
+
+raw_breakout = not na(prior_high) and close > prior_high * (1.0 + buffer_bps / 10000.0)
+not_exhausted = max_breakout_bps <= 0 or (not na(breakout_bps) and breakout_bps <= max_breakout_bps)
+
+sma50 = ta.sma(close, 50)
+sma100 = ta.sma(close, 100)
+sma200 = ta.sma(close, 200)
+sma50_slope20 = sma50 - sma50[20]
+sma200_slope20 = sma200 - sma200[20]
+
+sma200_bull = close > sma200
+bear = close < sma200
+
+regime_on = switch trend_mode
+    "bull_only" => sma200_bull
+    "sma200" => sma200_bull
+    "bear_only" => bear
+    "sma200_95" => close > sma200 * 0.95
+    "sma200_90" => close > sma200 * 0.90
+    "sma100" => close > sma100
+    "sma50" => close > sma50
+    "sma50_slope_up" => (close > sma50) and (sma50_slope20 > 0)
+    "sma200_slope_up" => sma200_slope20 > 0
+    "all" => true
+    => sma200_bull
+
+signal = raw_breakout and not_exhausted and regime_on
+
+// Optional: mark next-open intent (visual only; no broker orders)
+plotshape(signal, title="Signal (enter next open in paper sim)", style=shape.triangleup, location=location.belowbar, size=size.small, color=color.new(color.teal, 0), text="SIG")
+
+var table t = table.new(position.top_right, 2, 6, border_width=1)
+if barstate.islast
+    table.cell(t, 0, 0, "Preset", text_color=color.white, bgcolor=color.gray)
+    table.cell(t, 1, 0, preset, text_color=color.white, bgcolor=color.gray)
+    table.cell(t, 0, 1, "lookback", bgcolor=color.new(color.gray, 70))
+    table.cell(t, 1, 1, str.tostring(lookback), bgcolor=color.new(color.gray, 70))
+    table.cell(t, 0, 2, "trend", bgcolor=color.new(color.gray, 70))
+    table.cell(t, 1, 2, trend_mode, bgcolor=color.new(color.gray, 70))
+    table.cell(t, 0, 3, "regime_on", bgcolor=color.new(color.gray, 70))
+    table.cell(t, 1, 3, regime_on ? "yes" : "no", bgcolor=color.new(color.gray, 70))
+    table.cell(t, 0, 4, "signal", bgcolor=color.new(color.gray, 70))
+    table.cell(t, 1, 4, signal ? "YES" : "no", bgcolor=signal ? color.new(color.teal, 60) : color.new(color.gray, 70))
+    table.cell(t, 0, 5, "breakout_bps", bgcolor=color.new(color.gray, 70))
+    table.cell(t, 1, 5, na(breakout_bps) ? "na" : str.tostring(breakout_bps, "#.##"), bgcolor=color.new(color.gray, 70))
