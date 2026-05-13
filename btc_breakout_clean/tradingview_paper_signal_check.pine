@@ -20,7 +20,7 @@ trend_c = input.string("bull_only", "Trend (Custom)", options=["all", "bull_only
 lookback = preset == "Custom" ? lookback_c : preset == "ETHUSDT" ? 10 : (preset == "BTCUSD" or preset == "XCUUSD" or preset == "BNBUSDT" ? 15 : 30)
 buffer_bps = preset == "Custom" ? buffer_c : preset == "ETHUSDT" ? 150.0 : (preset == "BTCUSD" or preset == "BNBUSDT" ? 125.0 : 100.0)
 max_breakout_bps = preset == "Custom" ? max_bb_c : 225.0
-hold_days = preset == "Custom" ? hold_c : preset == "XAUUSD" or preset == "XAGUSD" ? 15 : 10
+hold_days = preset == "Custom" ? hold_c : preset == "ETHUSDT" ? 10 : preset == "BNBUSDT" ? 6 : preset == "XAUUSD" or preset == "XAGUSD" ? 15 : 5
 trend_mode = preset == "Custom" ? trend_c : preset == "XAUUSD" ? "sma200_95" : "bull_only"
 
 fmt_d() =>

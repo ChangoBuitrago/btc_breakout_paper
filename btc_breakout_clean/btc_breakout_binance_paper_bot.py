@@ -52,7 +52,7 @@ LIVE_STRATEGY_PARAMS: dict[str, dict[str, float | int | str | bool]] = {
         "buffer_bps": 125.0,
         "max_breakout_bps": 225.0,
         "trend_mode": "bull_only",
-        "hold_days": 10,
+        "hold_days": 5,
         "fee_bps": 10.0,
         "compound": True,
     },
@@ -74,7 +74,7 @@ LIVE_STRATEGY_PARAMS: dict[str, dict[str, float | int | str | bool]] = {
         "buffer_bps": 125.0,
         "max_breakout_bps": 225.0,
         "trend_mode": "bull_only",
-        "hold_days": 10,
+        "hold_days": 6,
         "fee_bps": 10.0,
         "compound": True,
     },
@@ -112,7 +112,7 @@ LIVE_STRATEGY_PARAMS: dict[str, dict[str, float | int | str | bool]] = {
         "compound": True,
     },
     # Aliases for manual single-symbol checks.
-    "BTCUSDT": {"source": "binance", "lookback": 15, "buffer_bps": 125.0, "max_breakout_bps": 225.0, "hold_days": 10},
+    "BTCUSDT": {"source": "binance", "lookback": 15, "buffer_bps": 125.0, "max_breakout_bps": 225.0, "hold_days": 5},
     "ETCUSDT": {"source": "binance", "lookback": 30, "buffer_bps": 100.0, "max_breakout_bps": 400.0, "hold_days": 5},
 }
 
