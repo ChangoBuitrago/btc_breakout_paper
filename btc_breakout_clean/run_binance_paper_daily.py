@@ -177,19 +177,42 @@ def build_telegram_message(*, results: list[dict[str, Any]]) -> str:
     year_return = total_year_pnl / starting_equity if starting_equity else 0.0
     annualized = 100.0 * ((1.0 + year_return) ** (1.0 / elapsed_years) - 1.0) if year_return > -1.0 else -100.0
     entries = [result["symbol"] for result in results if result["latest"]["signal"]]
-    next_action = f"ENTER {', '.join(entries)}" if entries else "no new entries"
-    lines = ["Breakout Paper Portfolio", f"{date}: {next_action} today.", f"PnL year: {year}", ""]
+    if entries:
+        open_line = f"Closed daily bar: {date} — next session open: long {', '.join(entries)}"
+    else:
+        open_line = f"Closed daily bar: {date} — next session open: no new longs"
+
+    lines = [
+        "Breakout Paper Portfolio",
+        "",
+        open_line,
+        "Paper only. Signals use the closed bar above; fills are modeled at the next open.",
+        "",
+        f"{year} calendar YTD (sleeve $ from equity curve; last column = share of combined sleeve YTD $, not sleeve return %)",
+        "",
+    ]
+    flat_ytd = abs(total_year_pnl) < 1e-6
     for result in results:
         latest = result["latest"]
         strat_cfg = result["strat_cfg"]
         year_summary = result["year_summary"]
         pnl = float(year_summary["pnl"])
-        contribution = 100.0 * pnl / total_year_pnl if total_year_pnl else 0.0
+        if flat_ytd:
+            share_col = "—"
+        else:
+            contribution = 100.0 * pnl / total_year_pnl
+            share_col = f"{contribution:.1f}% of YTD $"
         lines.append(
             f"{result['symbol']}: {signal_status(latest, strat_cfg)} | "
-            f"{fmt_signed_money(pnl)} | {contribution:.1f}%"
+            f"{fmt_signed_money(pnl)} | {share_col}"
         )
-    lines.extend(["", f"Total {year}: {fmt_signed_money(total_year_pnl)} ({100.0 * year_return:+.1f}% YTD, {annualized:.1f}% ann.)"])
+    lines.extend(
+        [
+            "",
+            f"Book ${starting_equity:,.0f} YTD: {fmt_signed_money(total_year_pnl)} "
+            f"({100.0 * year_return:+.1f}% on book, {annualized:+.1f}% simple annualized from Jan 1)",
+        ]
+    )
     return "\n".join(lines)
 
 
