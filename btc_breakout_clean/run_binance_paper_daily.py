@@ -148,22 +148,80 @@ def fmt_signed_money(value: float) -> str:
     return f"{sign}${abs(value):,.0f}"
 
 
-def signal_status(latest: dict[str, Any], strat_cfg: StrategyConfig) -> str:
+def summarize_open_position(
+    curve: pd.DataFrame,
+    df: pd.DataFrame,
+    strat_cfg: StrategyConfig,
+) -> dict[str, Any] | None:
+    if curve.empty or df.empty:
+        return None
+    c = curve.copy()
+    c["date"] = pd.to_datetime(c["date"], utc=True)
+    in_pos = c["in_position"].astype(bool)
+    if not bool(in_pos.iloc[-1]):
+        return None
+
+    entry_idx = 0
+    for i in range(len(c) - 1, -1, -1):
+        if not bool(in_pos.iloc[i]):
+            entry_idx = i + 1
+            break
+    entry_row = c.iloc[entry_idx]
+    entry_date = pd.Timestamp(entry_row["date"]).tz_convert("UTC").normalize()
+    norm_idx = df.index.tz_convert("UTC").normalize()
+    hits = norm_idx == entry_date
+    if not hits.any():
+        return None
+    entry_ts = df.index[hits.argmax()]
+    entry_px = float(df.loc[entry_ts, "open"])
+    cur_close = float(df.iloc[-1]["close"])
+    hold_day = int(len(c.iloc[entry_idx:]))
+    exit_idx = entry_idx + strat_cfg.hold_days - 1
+    exit_target = (
+        str(c.iloc[exit_idx]["date"])[:10]
+        if exit_idx < len(c)
+        else str(c.iloc[-1]["date"])[:10]
+    )
+    unrealized_pct = 100.0 * (cur_close / entry_px - 1.0)
+    size_frac = float(entry_row.get("size_frac", 0.0) or 0.0)
+    return {
+        "entry_date": entry_date.strftime("%Y-%m-%d"),
+        "entry_px": entry_px,
+        "cur_close": cur_close,
+        "hold_day": hold_day,
+        "hold_days": strat_cfg.hold_days,
+        "exit_target": exit_target.strftime("%Y-%m-%d"),
+        "unrealized_pct": unrealized_pct,
+        "size_frac": size_frac,
+    }
+
+
+def signal_status(
+    latest: dict[str, Any],
+    strat_cfg: StrategyConfig,
+    open_pos: dict[str, Any] | None = None,
+) -> str:
+    if open_pos:
+        return (
+            f"LONG {open_pos['hold_day']}/{open_pos['hold_days']} "
+            f"{open_pos['unrealized_pct']:+.1f}% vs entry "
+            f"(exit ~{open_pos['exit_target']})"
+        )
     if latest["signal"]:
-        return "ENTER next open"
+        return "signal → next open"
     if not latest.get("regime_on", latest["bull"]):
         if latest.get("breakout_bps") is None:
             return "regime off"
         distance_bps = float(strat_cfg.buffer_bps) - float(latest["breakout_bps"])
-        return f"regime off, +{max(distance_bps, 0.0):.0f} bps to signal"
+        return f"regime off +{max(distance_bps, 0.0):.0f}bps"
     if latest.get("prior_high") is None or latest.get("breakout_bps") is None:
         return "warming up"
     breakout_bps = float(latest["breakout_bps"])
     if breakout_bps < float(strat_cfg.buffer_bps):
-        return f"no breakout, +{float(strat_cfg.buffer_bps) - breakout_bps:.0f} bps to signal"
+        return f"no breakout +{float(strat_cfg.buffer_bps) - breakout_bps:.0f}bps"
     if strat_cfg.max_breakout_bps is not None and breakout_bps > float(strat_cfg.max_breakout_bps):
-        return f"too stretched at {breakout_bps:.0f} bps"
-    return "blocked by filters"
+        return f"too stretched {breakout_bps:.0f}bps"
+    return "blocked"
 
 
 def build_telegram_message(*, results: list[dict[str, Any]]) -> str:
@@ -176,42 +234,47 @@ def build_telegram_message(*, results: list[dict[str, Any]]) -> str:
     elapsed_years = max((signal_date - year_start).days / 365.25, 1e-9)
     year_return = total_year_pnl / starting_equity if starting_equity else 0.0
     annualized = 100.0 * ((1.0 + year_return) ** (1.0 / elapsed_years) - 1.0) if year_return > -1.0 else -100.0
-    entries = [result["symbol"] for result in results if result["latest"]["signal"]]
-    if entries:
-        open_line = f"Closed daily bar: {date} — next session open: long {', '.join(entries)}"
-    else:
-        open_line = f"Closed daily bar: {date} — next session open: no new longs"
 
-    lines = [
-        "Breakout Paper Portfolio",
-        "",
-        open_line,
-        "Paper only. Signals use the closed bar above; fills are modeled at the next open.",
-        "",
-        f"{year} calendar YTD (sleeve $ from equity curve; last column = share of combined sleeve YTD $, not sleeve return %)",
-        "",
-    ]
+    pending = [r["symbol"] for r in results if r["latest"]["signal"] and not r.get("open_position")]
+    open_rows = [r for r in results if r.get("open_position")]
+
+    if pending:
+        headline = f"{date} | signal → next open: {', '.join(pending)}"
+    else:
+        headline = f"{date} | no new signals"
+
+    lines = ["Breakout Paper Portfolio", headline, ""]
     flat_ytd = abs(total_year_pnl) < 1e-6
     for result in results:
         latest = result["latest"]
         strat_cfg = result["strat_cfg"]
+        open_pos = result.get("open_position")
         year_summary = result["year_summary"]
         pnl = float(year_summary["pnl"])
         if flat_ytd:
             share_col = "—"
         else:
-            contribution = 100.0 * pnl / total_year_pnl
-            share_col = f"{contribution:.1f}% of YTD $"
+            share_col = f"{100.0 * pnl / total_year_pnl:.1f}%"
         lines.append(
-            f"{result['symbol']}: {signal_status(latest, strat_cfg)} | "
+            f"{result['symbol']}: {signal_status(latest, strat_cfg, open_pos)} | "
             f"{fmt_signed_money(pnl)} | {share_col}"
         )
-    lines.extend(
-        [
-            "",
-            f"Book ${starting_equity:,.0f} YTD: {fmt_signed_money(total_year_pnl)} "
-            f"({100.0 * year_return:+.1f}% on book, {annualized:+.1f}% simple annualized from Jan 1)",
-        ]
+
+    if open_rows:
+        lines.append("")
+        lines.append("Open (paper):")
+        for result in open_rows:
+            op = result["open_position"]
+            lines.append(
+                f"{result['symbol']}: entered {op['entry_date']} @ {op['entry_px']:.4g} | "
+                f"now {op['cur_close']:.4g} ({op['unrealized_pct']:+.1f}%) | "
+                f"day {op['hold_day']}/{op['hold_days']} size {100 * op['size_frac']:.0f}%"
+            )
+
+    lines.append("")
+    lines.append(
+        f"YTD ${starting_equity:,.0f}: {fmt_signed_money(total_year_pnl)} "
+        f"({100.0 * year_return:+.1f}%, ann {annualized:+.1f}%)"
     )
     return "\n".join(lines)
 
@@ -298,6 +361,7 @@ def run_symbol(args: argparse.Namespace, symbol: str, state_dir: Path, log_path:
     df = add_indicators(raw, strat_cfg)
     trades, curve, summary = simulate_account(df, sim_cfg=sim_cfg, strat_cfg=strat_cfg)
     latest = latest_signal_report(df, strat_cfg)
+    open_position = summarize_open_position(curve, df, strat_cfg)
     event = classify_event(previous, latest, trades)
     year_summary = summarize_signal_year(trades, curve, signal_date=latest["signal_date"])
     state_written = not args.no_write
@@ -311,7 +375,7 @@ def run_symbol(args: argparse.Namespace, symbol: str, state_dir: Path, log_path:
     print(f"  Daily event: {event}")
     print(f"  Fake equity: ${fmt(summary['final_equity'])}")
     print(f"  Current-year PnL: ${fmt(year_summary['pnl'])}")
-    print(f"  Next action: {'PAPER ENTER LONG' if latest['signal'] else 'NO TRADE'}")
+    print(f"  Next action: {'PAPER ENTER LONG' if latest['signal'] and not open_position else 'IN POSITION' if open_position else 'NO TRADE'}")
     if state_written:
         print(f"  Run log: {log_path}")
     print("-" * 92)
@@ -325,6 +389,7 @@ def run_symbol(args: argparse.Namespace, symbol: str, state_dir: Path, log_path:
         "state_path": state_path,
         "equity": equity,
         "strat_cfg": strat_cfg,
+        "open_position": open_position,
     }
 
 
