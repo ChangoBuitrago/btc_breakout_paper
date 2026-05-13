@@ -28,6 +28,7 @@ sys.path.insert(0, str(HERE))
 from btc_breakout_binance_paper_bot import (  # noqa: E402
     LIVE_SYMBOLS,
     LIVE_PORTFOLIO_EQUITY,
+    LIVE_SLEEVE_EQUITY,
     fetch_binance_daily,
     live_symbol_equity,
     live_symbol_source,
@@ -226,6 +227,8 @@ def signal_status(
 
 def build_telegram_message(*, results: list[dict[str, Any]]) -> str:
     date = results[0]["latest"]["signal_date"][:10] if results else "n/a"
+    n_sleeves = len(results)
+    per_sleeve = float(results[0]["equity"]) if results else LIVE_SLEEVE_EQUITY
     starting_equity = sum(float(result["equity"]) for result in results)
     total_year_pnl = sum(float(result["year_summary"]["pnl"]) for result in results)
     year = results[0]["year_summary"]["year"] if results else pd.Timestamp.utcnow().year
@@ -243,7 +246,11 @@ def build_telegram_message(*, results: list[dict[str, Any]]) -> str:
     else:
         headline = f"{date} | no new signals"
 
-    lines = ["Breakout Paper Portfolio", headline, ""]
+    lines = [
+        f"Breakout Paper Portfolio ({n_sleeves}×${per_sleeve:,.0f} = ${starting_equity:,.0f})",
+        headline,
+        "",
+    ]
     flat_ytd = abs(total_year_pnl) < 1e-6
     for result in results:
         latest = result["latest"]
@@ -256,7 +263,7 @@ def build_telegram_message(*, results: list[dict[str, Any]]) -> str:
         else:
             share_col = f"{100.0 * pnl / total_year_pnl:.1f}%"
         lines.append(
-            f"{result['symbol']}: {signal_status(latest, strat_cfg, open_pos)} | "
+            f"{result['symbol']} [${per_sleeve:,.0f}]: {signal_status(latest, strat_cfg, open_pos)} | "
             f"{fmt_signed_money(pnl)} | {share_col}"
         )
 
@@ -405,7 +412,7 @@ def main() -> None:
     print("=" * 92)
     total_equity = sum(float(result["summary"]["final_equity"]) for result in results)
     total_year_pnl = sum(float(result["year_summary"]["pnl"]) for result in results)
-    print(f"  Configured starting equity: ${fmt(LIVE_PORTFOLIO_EQUITY)}")
+    print(f"  Configured: {len(LIVE_SYMBOLS)} sleeves × ${fmt(LIVE_SLEEVE_EQUITY)} = ${fmt(LIVE_PORTFOLIO_EQUITY)}")
     print(f"  Current fake equity:        ${fmt(total_equity)}")
     print(f"  Current-year fake PnL:      ${fmt(total_year_pnl)}")
     print("-" * 92)

@@ -9,7 +9,7 @@ Equal-weight **crypto + metals** paper portfolio (`BTCUSD`, `ETHUSDT`, `BNBUSDT`
 - Entry: next UTC daily open after the signal.
 - Sizing: `min(0.75x, 1.50% / 20-day daily realized vol)`.
 - Sizing base: current fake sleeve equity, compounded.
-- Account: `$60,000` total, split equally across six `$10k` sleeves.
+- Account: **6 sleeves × $10,000 = $60,000** total (equal weight).
 
 Tracked sleeves and fitted paper rules:
 

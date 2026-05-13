@@ -44,10 +44,11 @@ BINANCE_BASE_URL_FALLBACKS = (
     "https://data-api.binance.vision",
 )
 LIVE_SYMBOLS = ("BTCUSD", "ETHUSDT", "BNBUSDT", "XAUUSD", "XAGUSD", "XCUUSD")
+LIVE_SLEEVE_EQUITY = 10_000.0
 LIVE_STRATEGY_PARAMS: dict[str, dict[str, float | int | str | bool]] = {
     "BTCUSD": {
         "source": "dukascopy",
-        "equity": 10_000.0,
+        "equity": LIVE_SLEEVE_EQUITY,
         "lookback": 15,
         "buffer_bps": 125.0,
         "max_breakout_bps": 225.0,
@@ -58,7 +59,7 @@ LIVE_STRATEGY_PARAMS: dict[str, dict[str, float | int | str | bool]] = {
     },
     "ETHUSDT": {
         "source": "binance",
-        "equity": 10_000.0,
+        "equity": LIVE_SLEEVE_EQUITY,
         "lookback": 10,
         "buffer_bps": 150.0,
         "max_breakout_bps": 225.0,
@@ -69,7 +70,7 @@ LIVE_STRATEGY_PARAMS: dict[str, dict[str, float | int | str | bool]] = {
     },
     "BNBUSDT": {
         "source": "binance",
-        "equity": 10_000.0,
+        "equity": LIVE_SLEEVE_EQUITY,
         "lookback": 15,
         "buffer_bps": 125.0,
         "max_breakout_bps": 225.0,
@@ -80,7 +81,7 @@ LIVE_STRATEGY_PARAMS: dict[str, dict[str, float | int | str | bool]] = {
     },
     "XAUUSD": {
         "source": "dukascopy",
-        "equity": 10_000.0,
+        "equity": LIVE_SLEEVE_EQUITY,
         "lookback": 30,
         "buffer_bps": 100.0,
         "max_breakout_bps": 225.0,
@@ -91,7 +92,7 @@ LIVE_STRATEGY_PARAMS: dict[str, dict[str, float | int | str | bool]] = {
     },
     "XAGUSD": {
         "source": "dukascopy",
-        "equity": 10_000.0,
+        "equity": LIVE_SLEEVE_EQUITY,
         "lookback": 30,
         "buffer_bps": 100.0,
         "max_breakout_bps": 225.0,
@@ -102,7 +103,7 @@ LIVE_STRATEGY_PARAMS: dict[str, dict[str, float | int | str | bool]] = {
     },
     "XCUUSD": {
         "source": "dukascopy",
-        "equity": 10_000.0,
+        "equity": LIVE_SLEEVE_EQUITY,
         "lookback": 15,
         "buffer_bps": 100.0,
         "max_breakout_bps": 225.0,

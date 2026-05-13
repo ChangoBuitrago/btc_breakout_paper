@@ -36,9 +36,9 @@ jobs:
           path: |
             btc_breakout_clean/paper_portfolio/
             btc_breakout_clean/cache/
-          key: btc-metals-paper-${{ github.run_id }}
+          key: breakout-paper-${{ github.run_id }}
           restore-keys: |
-            btc-metals-paper-
+            breakout-paper-
 
       - name: Run breakout paper portfolio
         run: |
@@ -47,7 +47,7 @@ jobs:
       - name: Upload paper state
         uses: actions/upload-artifact@v4
         with:
-          name: btc-metals-paper-state
+          name: breakout-paper-state
           path: |
             btc_breakout_clean/paper_portfolio/
             btc_breakout_clean/cache/

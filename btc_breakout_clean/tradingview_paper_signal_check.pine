@@ -1,15 +1,20 @@
 // This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
 //@version=5
-// Mirrors btc_breakout_paper_sim on Dukascopy daily: signal at close, enter next session open,
-// skip Saturday session (Fri signal → Sun/Mon per data), fixed hold, exit at close.
-// Use 1D. TV OHLC can still differ from Dukascopy → compare dates on labels, not only shape position.
+// Paper bot mirror — 1D chart. Presets match LIVE_STRATEGY_PARAMS ($10k/sleeve, 2018+ rules).
+//   BTCUSD  Dukascopy  lb15 buf125 cap225 hold5  bull_only
+//   ETHUSDT Binance    lb10 buf150 cap225 hold10 bull_only
+//   BNBUSDT Binance    lb15 buf125 cap225 hold6  bull_only
+//   XAUUSD  Dukascopy  lb30 buf100 cap225 hold9  sma200_95
+//   XAGUSD  Dukascopy  lb30 buf100 cap225 hold13 bull_only
+//   XCUUSD  Dukascopy  lb15 buf100 cap225 hold4  bull_only
+// Signal @ close → enter next session open (optional Sat skip for Dukascopy calendar).
 indicator("Paper breakout check", shorttitle="PaperSig", overlay=true, max_labels_count=500)
 
-preset = input.string("XCUUSD", "Sleeve preset", options=["Custom", "BTCUSD", "ETHUSDT", "BNBUSDT", "XAUUSD", "XAGUSD", "XCUUSD"])
+preset = input.string("BTCUSD", "Sleeve preset ($10k paper)", options=["Custom", "BTCUSD", "ETHUSDT", "BNBUSDT", "XAUUSD", "XAGUSD", "XCUUSD"])
 show_prior_high = input.bool(true, "Plot prior-high level")
 show_trade_bg = input.bool(true, "Shade bars in paper trade")
 mark_days = input.int(120, "Date labels within last N days", minval=14)
-skip_sat_entry = input.bool(true, "Skip Saturday entry (Dukascopy daily calendar)")
+skip_sat_entry = input.bool(true, "Skip Saturday entry (Dukascopy daily)")
 
 lookback_c = input.int(15, "Lookback (Custom)", minval=1)
 buffer_c = input.float(100.0, "Buffer bps (Custom)", step=1)
@@ -22,6 +27,7 @@ buffer_bps = preset == "Custom" ? buffer_c : preset == "ETHUSDT" ? 150.0 : (pres
 max_breakout_bps = preset == "Custom" ? max_bb_c : 225.0
 hold_days = preset == "Custom" ? hold_c : preset == "ETHUSDT" ? 10 : preset == "BNBUSDT" ? 6 : preset == "XAUUSD" ? 9 : preset == "XAGUSD" ? 13 : preset == "XCUUSD" ? 4 : 5
 trend_mode = preset == "Custom" ? trend_c : preset == "XAUUSD" ? "sma200_95" : "bull_only"
+data_note = preset == "ETHUSDT" or preset == "BNBUSDT" ? "Binance" : preset == "Custom" ? "custom" : "Dukascopy"
 
 fmt_d() =>
     str.format("{0,date,yyyy-MM-dd}", time)
@@ -56,7 +62,6 @@ regime_on = switch trend_mode
 
 signal = raw_breakout and not_exhausted and regime_on
 
-// --- position state (matches paper sim; optional Sat skip for Dukascopy H1→D) ---
 var bool in_pos = false
 var int hold_count = 0
 var float entry_px = na
@@ -84,7 +89,6 @@ else if in_pos
 
 in_trade_bar = in_pos or exited
 unreal_pct = in_pos and not na(entry_px) and entry_px != 0.0 ? 100.0 * (close / entry_px - 1.0) : na
-
 in_label_window = time >= timenow - mark_days * 86400000
 
 bgcolor(show_trade_bg and in_trade_bar ? color.new(color.teal, 88) : na, title="In trade")
@@ -106,7 +110,7 @@ if barstate.islast
     label.delete(status)
     pending = signal and not in_pos
     last_sig = signal ? fmt_d() : "—"
-    status_txt = pending ? "Pending: SIG " + last_sig + " → enter next session open" : in_pos ? "LONG " + str.tostring(hold_count) + "/" + str.tostring(hold_days) + " | " + str.tostring(unreal_pct, "#.##") + "% vs entry" : "Flat"
-    detail = preset + " lb" + str.tostring(lookback) + " hold" + str.tostring(hold_days) + " " + trend_mode + " | bar " + fmt_d()
-    detail += "\nTelegram closed bar should match SIG date; IN = entry_date in bot state."
+    status_txt = pending ? "Pending SIG " + last_sig + " → next open" : in_pos ? "LONG " + str.tostring(hold_count) + "/" + str.tostring(hold_days) + " " + str.tostring(unreal_pct, "#.##") + "%" : "Flat"
+    detail = preset + " $10k | " + data_note + " | lb" + str.tostring(lookback) + " buf" + str.tostring(buffer_bps, "#") + " hold" + str.tostring(hold_days) + " " + trend_mode
+    detail += "\nbar " + fmt_d() + " | SIG date = Telegram closed bar"
     status := label.new(bar_index, high, status_txt + "\n" + detail, style=label.style_label_lower_left, color=color.new(color.black, 15), textcolor=color.white, size=size.small)
