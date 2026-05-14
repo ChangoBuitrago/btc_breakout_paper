@@ -43,10 +43,14 @@ from btc_breakout_paper_sim import (  # noqa: E402
     add_indicators,
     default_skip_saturday_entry,
     dukascopy_cache_path,
+    effective_hold_max,
+    effective_hold_min,
     fetch_dukascopy_instrument,
     fmt,
     latest_signal_report,
+    momentum_faded,
     simulate_account,
+    uses_dynamic_hold,
 )
 
 
@@ -177,11 +181,19 @@ def summarize_open_position(
     entry_ts = df.index[hits.argmax()]
     entry_px = float(df.loc[entry_ts, "open"])
     cur_close = float(df.iloc[-1]["close"])
+    hold_min = effective_hold_min(strat_cfg)
+    hold_max = effective_hold_max(strat_cfg)
+    dynamic = uses_dynamic_hold(strat_cfg)
     hold_day = int(len(c.iloc[entry_idx:]))
-    exit_idx = entry_idx + strat_cfg.hold_days - 1
+    entry_i = int(hits.argmax())
+    peak_close = float(df.iloc[entry_i : len(df)]["close"].max())
+    fade_now = dynamic and hold_day >= hold_min and momentum_faded(
+        df, len(df) - 1, peak_close=peak_close, giveback_pct=strat_cfg.hold_giveback_pct
+    )
+    max_exit_idx = entry_idx + hold_max - 1
     exit_target = (
-        str(c.iloc[exit_idx]["date"])[:10]
-        if exit_idx < len(c)
+        str(c.iloc[max_exit_idx]["date"])[:10]
+        if max_exit_idx < len(c)
         else str(c.iloc[-1]["date"])[:10]
     )
     unrealized_pct = 100.0 * (cur_close / entry_px - 1.0)
@@ -191,8 +203,12 @@ def summarize_open_position(
         "entry_px": entry_px,
         "cur_close": cur_close,
         "hold_day": hold_day,
-        "hold_days": strat_cfg.hold_days,
-        "exit_target": exit_target.strftime("%Y-%m-%d"),
+        "hold_min": hold_min,
+        "hold_max": hold_max,
+        "hold_days": hold_max if dynamic else hold_min,
+        "dynamic_hold": dynamic,
+        "momentum_fade": fade_now,
+        "exit_target": exit_target,
         "unrealized_pct": unrealized_pct,
         "size_frac": size_frac,
     }
@@ -227,10 +243,20 @@ def signal_status(
     pending: dict[str, Any] | None = None,
 ) -> str:
     if open_pos:
+        hold_label = (
+            f"{open_pos['hold_day']}/{open_pos['hold_min']}-{open_pos['hold_max']}"
+            if open_pos.get("dynamic_hold")
+            else f"{open_pos['hold_day']}/{open_pos['hold_days']}"
+        )
+        exit_note = (
+            "fade → exit next close"
+            if open_pos.get("momentum_fade")
+            else f"exit ≤{open_pos['exit_target']}"
+        )
         return (
-            f"LONG {open_pos['hold_day']}/{open_pos['hold_days']} "
+            f"LONG {hold_label} "
             f"{open_pos['unrealized_pct']:+.1f}% vs entry "
-            f"(exit ~{open_pos['exit_target']})"
+            f"({exit_note})"
         )
     if pending:
         if pending["size_frac"] > 0.0:
@@ -330,10 +356,16 @@ def build_telegram_message(*, results: list[dict[str, Any]]) -> str:
         lines.append("Open (paper):")
         for result in open_rows:
             op = result["open_position"]
+            hold_txt = (
+                f"day {op['hold_day']}/{op['hold_min']}-{op['hold_max']}"
+                if op.get("dynamic_hold")
+                else f"day {op['hold_day']}/{op['hold_days']}"
+            )
+            fade_txt = " | fade→exit" if op.get("momentum_fade") else f" | exit ≤{op['exit_target']}"
             lines.append(
                 f"{result['symbol']}: entered {op['entry_date']} @ {op['entry_px']:.4g} | "
                 f"now {op['cur_close']:.4g} ({op['unrealized_pct']:+.1f}%) | "
-                f"day {op['hold_day']}/{op['hold_days']} size {100 * op['size_frac']:.0f}%"
+                f"{hold_txt} size {100 * op['size_frac']:.0f}%{fade_txt}"
             )
 
     lines.append("")
@@ -437,15 +469,19 @@ def run_symbol(args: argparse.Namespace, symbol: str, state_dir: Path, log_path:
         write_state(state_path, trades_path, equity_path, trades, curve, summary, latest)
         append_run_log(log_path, event=event, symbol=symbol, summary=summary, latest=latest)
 
-    print_bot_report(symbol, source_label(source), df, trades, curve, summary, latest, strat_cfg, state_path, state_written)
-    print("-" * 92)
-    print(f"  Daily event: {event}")
-    print(f"  Fake equity: ${fmt(summary['final_equity'])}")
-    print(f"  Current-year PnL: ${fmt(year_summary['pnl'])}")
-    print(f"  Next action: {'PAPER ENTER LONG' if pending_entry and pending_entry.get('size_frac', 0) > 0 else 'IN POSITION' if open_position else 'NO TRADE'}")
-    if state_written:
-        print(f"  Run log: {log_path}")
-    print("-" * 92)
+    quiet = bool(getattr(args, "quiet", False))
+    if not quiet:
+        print_bot_report(symbol, source_label(source), df, trades, curve, summary, latest, strat_cfg, state_path, state_written)
+        print("-" * 92)
+        print(f"  Daily event: {event}")
+        print(f"  Fake equity: ${fmt(summary['final_equity'])}")
+        print(f"  Current-year PnL: ${fmt(year_summary['pnl'])}")
+        print(
+            f"  Next action: {'PAPER ENTER LONG' if pending_entry and pending_entry.get('size_frac', 0) > 0 else 'IN POSITION' if open_position else 'NO TRADE'}"
+        )
+        if state_written:
+            print(f"  Run log: {log_path}")
+        print("-" * 92)
 
     return {
         "symbol": symbol.upper(),
@@ -458,6 +494,8 @@ def run_symbol(args: argparse.Namespace, symbol: str, state_dir: Path, log_path:
         "strat_cfg": strat_cfg,
         "open_position": open_position,
         "pending_entry": pending_entry,
+        "curve": curve,
+        "trades": trades,
     }
 
 

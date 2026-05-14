@@ -1,0 +1,282 @@
+#!/usr/bin/env python3
+"""
+Minimal local dashboard — what Telegram does *not* show:
+  • Portfolio equity curve since 2026
+  • Per-sleeve return % since 2026 (not YTD $ share)
+  • PnL attribution, drawdown, exposure, last trade, 2026 trade list
+
+  ./btc_breakout_clean/run_dashboard.sh
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
+import streamlit as st
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+
+from btc_breakout_binance_paper_bot import LIVE_SLEEVE_EQUITY, LIVE_SYMBOLS, live_symbol_source
+from run_binance_paper_daily import run_symbol, signal_status
+
+VIEW_START = pd.Timestamp("2026-01-01", tz="UTC")
+
+
+def _args(*, refresh_cache: bool = False) -> argparse.Namespace:
+    return argparse.Namespace(
+        symbol=None,
+        symbols=",".join(LIVE_SYMBOLS),
+        base_url="https://api.binance.com",
+        start="2018-01-01",
+        end=None,
+        equity=LIVE_SLEEVE_EQUITY,
+        trend_mode=None,
+        state_dir=str(HERE / "paper_portfolio"),
+        refresh_cache=refresh_cache,
+        no_write=True,
+        telegram_token=None,
+        telegram_chat_id=None,
+        no_telegram=True,
+        quiet=True,
+    )
+
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def load_symbol(symbol: str, refresh_cache: bool) -> dict[str, Any]:
+    args = _args(refresh_cache=refresh_cache)
+    return run_symbol(args, symbol, Path(args.state_dir), Path(args.state_dir) / "run_log.csv")
+
+
+def load_all(refresh_cache: bool) -> list[dict[str, Any]]:
+    n = len(LIVE_SYMBOLS)
+    if not any((HERE / "cache" / f"{s}_dukascopy_h1.csv").exists() for s in LIVE_SYMBOLS if live_symbol_source(s) == "dukascopy"):
+        if not refresh_cache:
+            st.caption("First load downloads Dukascopy history (5–15 min). Later loads use cache.")
+    bar = st.progress(0.0, text=f"Loading 0/{n}…")
+    out: list[dict[str, Any]] = []
+    for i, sym in enumerate(LIVE_SYMBOLS):
+        bar.progress((i + 1) / n, text=f"Loading {sym} ({i + 1}/{n})…")
+        out.append(load_symbol(sym, refresh_cache))
+    bar.empty()
+    return out
+
+
+def eq_series(curve: pd.DataFrame) -> pd.Series:
+    if curve.empty:
+        return pd.Series(dtype=float)
+    c = curve.copy()
+    c["date"] = pd.to_datetime(c["date"], utc=True)
+    return c.set_index("date")["equity"].astype(float).sort_index()
+
+
+def port_equity(results: list[dict[str, Any]]) -> pd.Series:
+    parts = []
+    for r in results:
+        s = eq_series(r["curve"])
+        if not s.empty:
+            parts.append(s.rename(r["symbol"]))
+    if not parts:
+        return pd.Series(dtype=float)
+    wide = pd.concat(parts, axis=1).ffill()
+    for r in results:
+        wide[r["symbol"]] = wide[r["symbol"]].fillna(float(r["equity"]))
+    return wide.sum(axis=1).sort_index()
+
+
+def eq_at(series: pd.Series, ts: pd.Timestamp) -> float | None:
+    sub = series[series.index <= ts]
+    return float(sub.iloc[-1]) if len(sub) else None
+
+
+def ret_pct_since(series: pd.Series, start: pd.Timestamp) -> float:
+    base = eq_at(series, start)
+    if not base or series.empty:
+        return 0.0
+    return 100.0 * (float(series.iloc[-1]) / base - 1.0)
+
+
+def max_dd_since(series: pd.Series, start: pd.Timestamp) -> float:
+    s = series[series.index >= start]
+    if s.empty:
+        return 0.0
+    dd = s / s.cummax() - 1.0
+    return 100.0 * float(dd.min())
+
+
+def exposure_since(curve: pd.DataFrame, start: pd.Timestamp) -> float:
+    if curve.empty or "in_position" not in curve.columns:
+        return 0.0
+    c = curve.copy()
+    c["date"] = pd.to_datetime(c["date"], utc=True)
+    c = c[c["date"] >= start]
+    if c.empty:
+        return 0.0
+    return 100.0 * float(c["in_position"].astype(bool).mean())
+
+
+def bps_to_signal(latest: dict[str, Any], buffer_bps: float) -> str:
+    bps = latest.get("breakout_bps")
+    if bps is None:
+        return "—"
+    bps = float(bps)
+    if bps >= buffer_bps:
+        return f"{bps:.0f} (≥buf)"
+    return f"+{buffer_bps - bps:.0f}"
+
+
+def last_trade_2026(trades: pd.DataFrame) -> str:
+    if trades.empty:
+        return "—"
+    t = trades.copy()
+    t["exit_date"] = pd.to_datetime(t["exit_date"], utc=True)
+    t = t[t["exit_date"] >= VIEW_START].sort_values("exit_date", ascending=False)
+    if t.empty:
+        return "—"
+    row = t.iloc[0]
+    d = str(row["exit_date"])[:10]
+    pnl = float(row["net_pnl"])
+    sign = "+" if pnl >= 0 else ""
+    return f"{d} {sign}${pnl:,.0f}"
+
+
+def trades_2026_count(trades: pd.DataFrame) -> int:
+    if trades.empty:
+        return 0
+    t = trades.copy()
+    t["exit_date"] = pd.to_datetime(t["exit_date"], utc=True)
+    return int((t["exit_date"] >= VIEW_START).sum())
+
+
+def state_label(r: dict[str, Any]) -> str:
+    if r.get("open_position"):
+        op = r["open_position"]
+        if op.get("dynamic_hold"):
+            return f"LONG {op['hold_day']}/{op['hold_min']}-{op['hold_max']}"
+        return f"LONG {op['hold_day']}/{op['hold_days']}"
+    pe = r.get("pending_entry")
+    if pe and float(pe.get("size_frac") or 0) > 0:
+        return f"PEND {pe['signal_date']}"
+    return "FLAT"
+
+
+def main() -> None:
+    st.set_page_config(page_title="Paper · 2026+", layout="wide", initial_sidebar_state="collapsed")
+
+    c1, c2 = st.columns([5, 1])
+    with c1:
+        st.title("Paper book · 2026+")
+    with c2:
+        if st.button("↻ Refresh"):
+            load_symbol.clear()
+            st.rerun()
+
+    try:
+        results = load_all(refresh_cache=False)
+    except Exception as exc:
+        st.error(str(exc))
+        st.caption("Use `./btc_breakout_clean/run_dashboard.sh` (Python 3.10+).")
+        return
+
+    port = port_equity(results)
+    last_bar = results[0]["latest"]["signal_date"][:10]
+    port_ret = ret_pct_since(port, VIEW_START)
+    port_dd = max_dd_since(port, VIEW_START)
+    port_now = float(port.iloc[-1]) if not port.empty else 60_000.0
+
+    st.markdown(
+        f"**{last_bar}** UTC close · book **${port_now:,.0f}** · since 2026 **{port_ret:+.2f}%** · "
+        f"max DD **{port_dd:.2f}%**"
+    )
+
+    # --- Chart: portfolio % since 2026 (Telegram has no curve) ---
+    base = eq_at(port, VIEW_START) or port_now
+    view = port[port.index >= VIEW_START]
+    if not view.empty:
+        pct = (view / base - 1.0) * 100.0
+        st.line_chart(pd.DataFrame({"portfolio %": pct}), height=220)
+
+    # --- Attribution: per-sleeve return % since 2026 (TG shows $ share of YTD, not sleeve return) ---
+    attrib = {}
+    for r in results:
+        attrib[r["symbol"]] = ret_pct_since(eq_series(r["curve"]), VIEW_START)
+    st.caption("Return % per sleeve since 2026-01-01 (on each $10k sleeve, compounded)")
+    st.bar_chart(pd.DataFrame({"return %": attrib}), height=180)
+
+    # --- Scan table: one row per sleeve ---
+    rows = []
+    for r in results:
+        sym = r["symbol"]
+        latest = r["latest"]
+        strat = r["strat_cfg"]
+        curve = r["curve"]
+        trades = r["trades"]
+        op = r.get("open_position")
+        row = {
+            "": state_label(r),
+            "symbol": sym,
+            "ret_2026_%": round(ret_pct_since(eq_series(curve), VIEW_START), 2),
+            "trades_26": trades_2026_count(trades),
+            "exposure_%": round(exposure_since(curve, VIEW_START), 1),
+            "last_exit": last_trade_2026(trades),
+            "to_signal_bps": bps_to_signal(latest, float(strat.buffer_bps)),
+        }
+        if op:
+            row["unreal_%"] = round(op["unrealized_pct"], 1)
+            row["exit_on"] = op["exit_target"]
+        else:
+            row["unreal_%"] = None
+            row["exit_on"] = None
+        rows.append(row)
+
+    st.caption("Today’s gate / status (Telegram text) in sidebar expander below table.")
+    st.dataframe(
+        pd.DataFrame(rows),
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "": st.column_config.TextColumn("state", width="small"),
+            "ret_2026_%": st.column_config.NumberColumn("ret 2026 %", format="%.2f"),
+            "trades_26": st.column_config.NumberColumn("trades", format="%d"),
+            "exposure_%": st.column_config.NumberColumn("in mkt %", format="%.1f"),
+            "unreal_%": st.column_config.NumberColumn("unreal %", format="%.1f"),
+        },
+    )
+
+    with st.expander("Telegram-style status (per sleeve)"):
+        for r in results:
+            st.text(
+                f"{r['symbol']}: {signal_status(r['latest'], r['strat_cfg'], r.get('open_position'), r.get('pending_entry'))}"
+            )
+
+    # --- 2026 trades (TG never lists history) ---
+    st.subheader("Exits since 2026")
+    parts = []
+    for r in results:
+        t = r["trades"].copy()
+        if t.empty:
+            continue
+        t["exit_date"] = pd.to_datetime(t["exit_date"], utc=True)
+        t = t[t["exit_date"] >= VIEW_START].sort_values("exit_date", ascending=False)
+        if not t.empty:
+            p = t[["entry_date", "exit_date", "hold_days", "net_pnl", "open_to_exit_pct", "size_frac"]].copy()
+            p.insert(0, "symbol", r["symbol"])
+            parts.append(p)
+    if parts:
+        all_t = pd.concat(parts, ignore_index=True).sort_values("exit_date", ascending=False)
+        all_t["net_pnl"] = pd.to_numeric(all_t["net_pnl"]).round(0)
+        all_t["open_to_exit_pct"] = pd.to_numeric(all_t["open_to_exit_pct"]).round(1)
+        all_t["size_frac"] = (pd.to_numeric(all_t["size_frac"]) * 100).round(0)
+        st.dataframe(all_t.head(20), use_container_width=True, hide_index=True)
+    else:
+        st.write("No exits yet in 2026.")
+
+    st.caption(f"Updated {pd.Timestamp.utcnow():%Y-%m-%d %H:%M UTC} · sim from 2018, view from 2026")
+
+
+if __name__ == "__main__":
+    main()

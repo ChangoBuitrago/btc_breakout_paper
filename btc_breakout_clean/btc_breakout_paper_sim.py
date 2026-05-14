@@ -73,6 +73,44 @@ class StrategyConfig:
     vol_target: float
     max_alloc: float
     compound: bool
+    hold_min: int | None = None
+    hold_max: int | None = None
+    dynamic_hold: bool = False
+    hold_giveback_pct: float = 0.03
+
+
+def effective_hold_min(cfg: StrategyConfig) -> int:
+    return int(cfg.hold_min if cfg.hold_min is not None else cfg.hold_days)
+
+
+def effective_hold_max(cfg: StrategyConfig) -> int:
+    if cfg.hold_max is not None:
+        return int(cfg.hold_max)
+    return effective_hold_min(cfg)
+
+
+def uses_dynamic_hold(cfg: StrategyConfig) -> bool:
+    return bool(cfg.dynamic_hold) and effective_hold_max(cfg) > effective_hold_min(cfg)
+
+
+def momentum_faded(
+    df: pd.DataFrame,
+    i: int,
+    *,
+    peak_close: float,
+    giveback_pct: float,
+) -> bool:
+    """True when open-trade momentum has weakened (evaluated at bar i close)."""
+    cur = float(df["close"].iloc[i])
+    if peak_close > 0 and cur <= peak_close * (1.0 - giveback_pct):
+        return True
+    sma50 = float(df["sma50"].iloc[i])
+    if np.isfinite(sma50) and cur < sma50:
+        return True
+    slope = float(df["sma50_slope20"].iloc[i])
+    if np.isfinite(slope) and slope < 0:
+        return True
+    return False
 
 
 @dataclass(frozen=True)
@@ -471,7 +509,21 @@ def simulate_account(
                 and atr > 0.0
                 and cur_close < peak_close * (1.0 - strat_cfg.trail_atr * atr)
             )
-            target_exit = hold_bars >= strat_cfg.hold_days
+            hmin = effective_hold_min(strat_cfg)
+            hmax = effective_hold_max(strat_cfg)
+            if uses_dynamic_hold(strat_cfg):
+                faded = momentum_faded(
+                    df, i, peak_close=peak_close, giveback_pct=strat_cfg.hold_giveback_pct
+                )
+                target_exit = hold_bars >= hmax or (hold_bars >= hmin and faded)
+                exit_reason = (
+                    "max_hold"
+                    if hold_bars >= hmax
+                    else ("momentum_fade" if faded else "")
+                )
+            else:
+                target_exit = hold_bars >= strat_cfg.hold_days
+                exit_reason = "fixed_hold" if target_exit else ""
 
             if target_exit or trail_hit:
                 signal_close = float(df["close"].iloc[signal_i_at_entry])
@@ -486,6 +538,8 @@ def simulate_account(
                 day_pnl += exit_pnl
                 equity += exit_pnl
                 action = ("ENTRY_EXIT" if hold_bars == 1 else "EXIT") + ("_TRAIL" if trail_hit else "")
+                if trail_hit:
+                    exit_reason = "trail"
 
                 trades.append(
                     {
@@ -493,6 +547,9 @@ def simulate_account(
                         "entry_date": df.index[entry_i].isoformat(),
                         "exit_date": entry_date.isoformat(),
                         "hold_days": hold_bars,
+                        "hold_min": hmin,
+                        "hold_max": hmax,
+                        "exit_reason": exit_reason,
                         "signal_close": signal_close,
                         "signal_prior_high": signal_prior_high,
                         "breakout_bps": float(df["breakout_bps"].iloc[signal_i_at_entry]),
@@ -552,12 +609,17 @@ def simulate_account(
         equity += exit_pnl
         signal_close = float(df["close"].iloc[signal_i_at_entry])
         signal_prior_high = float(df["prior_high"].iloc[signal_i_at_entry])
+        hmin_f = effective_hold_min(strat_cfg)
+        hmax_f = effective_hold_max(strat_cfg)
         trades.append(
             {
                 "signal_date": df.index[signal_i_at_entry].isoformat(),
                 "entry_date": df.index[entry_i].isoformat(),
                 "exit_date": df.index[last_i].isoformat(),
                 "hold_days": last_i - entry_i + 1,
+                "hold_min": hmin_f,
+                "hold_max": hmax_f,
+                "exit_reason": "force_exit",
                 "signal_close": signal_close,
                 "signal_prior_high": signal_prior_high,
                 "breakout_bps": float(df["breakout_bps"].iloc[signal_i_at_entry]),

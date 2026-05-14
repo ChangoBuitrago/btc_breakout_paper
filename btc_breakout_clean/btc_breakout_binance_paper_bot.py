@@ -33,10 +33,13 @@ from btc_breakout_paper_sim import (  # noqa: E402
     TREND_MODE_CHOICES,
     add_indicators,
     default_skip_saturday_entry,
+    effective_hold_max,
+    effective_hold_min,
     fmt,
     fmt_pf,
     latest_signal_report,
     simulate_account,
+    uses_dynamic_hold,
 )
 
 DEFAULT_BINANCE_BASE_URL = "https://api.binance.com"
@@ -55,6 +58,9 @@ LIVE_STRATEGY_PARAMS: dict[str, dict[str, float | int | str | bool]] = {
         "max_breakout_bps": 225.0,
         "trend_mode": "bull_only",
         "hold_days": 5,
+        "hold_min": 5,
+        "hold_max": 10,
+        "dynamic_hold": True,
         "fee_bps": 10.0,
         "compound": True,
     },
@@ -66,6 +72,9 @@ LIVE_STRATEGY_PARAMS: dict[str, dict[str, float | int | str | bool]] = {
         "max_breakout_bps": 225.0,
         "trend_mode": "bull_only",
         "hold_days": 10,
+        "hold_min": 10,
+        "hold_max": 13,
+        "dynamic_hold": True,
         "fee_bps": 10.0,
         "compound": True,
     },
@@ -77,6 +86,9 @@ LIVE_STRATEGY_PARAMS: dict[str, dict[str, float | int | str | bool]] = {
         "max_breakout_bps": 225.0,
         "trend_mode": "bull_only",
         "hold_days": 6,
+        "hold_min": 6,
+        "hold_max": 10,
+        "dynamic_hold": True,
         "fee_bps": 10.0,
         "compound": True,
     },
@@ -88,6 +100,9 @@ LIVE_STRATEGY_PARAMS: dict[str, dict[str, float | int | str | bool]] = {
         "max_breakout_bps": 225.0,
         "trend_mode": "sma200_95",
         "hold_days": 9,
+        "hold_min": 9,
+        "hold_max": 15,
+        "dynamic_hold": True,
         "fee_bps": 2.0,
         "compound": True,
     },
@@ -99,6 +114,9 @@ LIVE_STRATEGY_PARAMS: dict[str, dict[str, float | int | str | bool]] = {
         "max_breakout_bps": 225.0,
         "trend_mode": "bull_only",
         "hold_days": 13,
+        "hold_min": 13,
+        "hold_max": 15,
+        "dynamic_hold": True,
         "fee_bps": 2.0,
         "compound": True,
     },
@@ -110,6 +128,9 @@ LIVE_STRATEGY_PARAMS: dict[str, dict[str, float | int | str | bool]] = {
         "max_breakout_bps": 225.0,
         "trend_mode": "bull_only",
         "hold_days": 4,
+        "hold_min": 4,
+        "hold_max": 5,
+        "dynamic_hold": True,
         "fee_bps": 10.0,
         "compound": True,
     },
@@ -135,17 +156,24 @@ def live_symbol_equity(symbol: str, fallback: float) -> float:
 
 def live_strategy_config(symbol: str = "BTCUSD") -> StrategyConfig:
     params = live_symbol_params(symbol)
+    hold_min = int(params.get("hold_min", params["hold_days"]))
+    hold_max = int(params.get("hold_max", hold_min))
+    dynamic_hold = bool(params.get("dynamic_hold", hold_max > hold_min))
     return StrategyConfig(
         lookback=int(params["lookback"]),
         buffer_bps=float(params["buffer_bps"]),
         max_breakout_bps=float(params["max_breakout_bps"]),
         trend_mode=str(params.get("trend_mode", "bull_only")),
-        hold_days=int(params["hold_days"]),
+        hold_days=hold_min,
         trail_atr=0.0,
         fee_bps=float(params.get("fee_bps", 10.0)),
         vol_target=0.015,
         max_alloc=0.75,
         compound=bool(params.get("compound", False)),
+        hold_min=hold_min,
+        hold_max=hold_max,
+        dynamic_hold=dynamic_hold,
+        hold_giveback_pct=float(params.get("hold_giveback_pct", 0.03)),
     )
 
 
@@ -253,10 +281,13 @@ def print_bot_report(
     print("=" * 92)
     print(f"  Symbol: {symbol.upper()}  |  Source: {source_label}")
     print(f"  Data:   {df.index[0].date()} -> {df.index[-1].date()} rows={len(df):,}")
+    hmin = effective_hold_min(strat_cfg)
+    hmax = effective_hold_max(strat_cfg)
+    hold_txt = f"hold {hmin}-{hmax} dyn" if uses_dynamic_hold(strat_cfg) else f"hold={hmin}"
     print(
         f"  Rule:   {strat_cfg.trend_mode}, {strat_cfg.lookback}d breakout "
         f"+ {strat_cfg.buffer_bps:.0f}bps, max breakout {strat_cfg.max_breakout_bps:.0f}bps, "
-        f"hold={strat_cfg.hold_days}"
+        f"{hold_txt}"
     )
     print("  Orders: PAPER ONLY - no real exchange orders are sent")
     print("-" * 92)
