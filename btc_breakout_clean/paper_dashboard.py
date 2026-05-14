@@ -164,6 +164,13 @@ def state_label(r: dict[str, Any]) -> str:
     return "FLAT"
 
 
+def pnl_since(series: pd.Series, start: pd.Timestamp) -> float:
+    base = eq_at(series, start)
+    if base is None or series.empty:
+        return 0.0
+    return float(series.iloc[-1]) - base
+
+
 def main() -> None:
     st.set_page_config(page_title="Paper · 2026+", layout="wide", initial_sidebar_state="collapsed")
 
@@ -184,21 +191,26 @@ def main() -> None:
 
     port = port_equity(results)
     last_bar = results[0]["latest"]["signal_date"][:10]
+    port_base_2026 = eq_at(port, VIEW_START)
     port_ret = ret_pct_since(port, VIEW_START)
+    port_pnl = pnl_since(port, VIEW_START)
     port_dd = max_dd_since(port, VIEW_START)
-    port_now = float(port.iloc[-1]) if not port.empty else 60_000.0
 
     st.markdown(
-        f"**{last_bar}** UTC close · book **${port_now:,.0f}** · since 2026 **{port_ret:+.2f}%** · "
-        f"max DD **{port_dd:.2f}%**"
+        f"**{last_bar}** UTC close · **2026 PnL {port_pnl:+,.0f}** ({port_ret:+.2f}%) · "
+        f"max DD since Jan-1 **{port_dd:.2f}%**"
     )
+    if port_base_2026 is not None:
+        st.caption(
+            f"2026 return is on book equity at 2026-01-01 (${port_base_2026:,.0f} across 6 sleeves). "
+            f"Replay still warms up from 2018 internally; nothing here is lifetime PnL."
+        )
 
     # --- Chart: portfolio % since 2026 (Telegram has no curve) ---
-    base = eq_at(port, VIEW_START) or port_now
     view = port[port.index >= VIEW_START]
-    if not view.empty:
-        pct = (view / base - 1.0) * 100.0
-        st.line_chart(pd.DataFrame({"portfolio %": pct}), height=220)
+    if not view.empty and port_base_2026:
+        pct = (view / port_base_2026 - 1.0) * 100.0
+        st.line_chart(pd.DataFrame({"portfolio % since 2026": pct}), height=220)
 
     # --- Attribution: per-sleeve return % since 2026 (TG shows $ share of YTD, not sleeve return) ---
     attrib = {}
@@ -219,6 +231,7 @@ def main() -> None:
         row = {
             "": state_label(r),
             "symbol": sym,
+            "pnl_2026_$": round(pnl_since(eq_series(curve), VIEW_START), 0),
             "ret_2026_%": round(ret_pct_since(eq_series(curve), VIEW_START), 2),
             "trades_26": trades_2026_count(trades),
             "exposure_%": round(exposure_since(curve, VIEW_START), 1),
@@ -240,6 +253,7 @@ def main() -> None:
         hide_index=True,
         column_config={
             "": st.column_config.TextColumn("state", width="small"),
+            "pnl_2026_$": st.column_config.NumberColumn("PnL 2026 $", format="%.0f"),
             "ret_2026_%": st.column_config.NumberColumn("ret 2026 %", format="%.2f"),
             "trades_26": st.column_config.NumberColumn("trades", format="%d"),
             "exposure_%": st.column_config.NumberColumn("in mkt %", format="%.1f"),
@@ -275,7 +289,7 @@ def main() -> None:
     else:
         st.write("No exits yet in 2026.")
 
-    st.caption(f"Updated {pd.Timestamp.utcnow():%Y-%m-%d %H:%M UTC} · sim from 2018, view from 2026")
+    st.caption(f"Updated {pd.Timestamp.utcnow():%Y-%m-%d %H:%M UTC} · 2026 view only")
 
 
 if __name__ == "__main__":
