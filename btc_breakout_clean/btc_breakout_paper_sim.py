@@ -90,6 +90,14 @@ class SimConfig:
     write_files: bool
     out_dir: Path
     instrument: str = DEFAULT_DUKASCOPY_INSTRUMENT
+    skip_saturday_entry: bool = False
+    hwm_pause_pct: float | None = None
+    blocked_entry_dates: frozenset[pd.Timestamp] = frozenset()
+
+
+def default_skip_saturday_entry(source: str) -> bool:
+    """Dukascopy daily bars include Saturday; align with Pine skip_sat_entry."""
+    return source == "dukascopy"
 
 
 def normalize_ohlc(df: pd.DataFrame) -> pd.DataFrame:
@@ -397,6 +405,9 @@ def simulate_account(
     size_frac = 0.0
     equity_before_entry = equity
     peak_close = 0.0
+    pending_signal_i: int | None = None
+    equity_peak = float(sim_cfg.equity)
+    entries_paused = False
 
     for i in range(1, len(df)):
         entry_date = df.index[i]
@@ -408,25 +419,47 @@ def simulate_account(
         todays_signal_i = i - 1
         todays_signal = bool(df["signal"].iloc[todays_signal_i])
         todays_size_frac = 0.0
+        entry_day = entry_date.normalize()
 
         if not in_pos and todays_signal:
-            rv = float(df["vol20"].iloc[todays_signal_i])
-            todays_size_frac = min(strat_cfg.max_alloc, strat_cfg.vol_target / rv) if np.isfinite(rv) and rv > 0 else 0.0
-            if todays_size_frac > 0.0:
-                entry_px = float(df["open"].iloc[i])
-                sizing_base = equity if strat_cfg.compound else fixed_sizing_equity
-                entry_notional = sizing_base * todays_size_frac
-                qty = entry_notional / entry_px
-                entry_fee = entry_notional * fee
-                equity_before_entry = equity
-                equity -= entry_fee
-                day_pnl -= entry_fee
-                in_pos = True
-                entry_i = i
-                signal_i_at_entry = todays_signal_i
-                size_frac = todays_size_frac
-                peak_close = float(df["close"].iloc[i])
-                action = "ENTRY"
+            pending_signal_i = todays_signal_i
+
+        equity_peak = max(equity_peak, equity)
+        if sim_cfg.hwm_pause_pct is not None and sim_cfg.hwm_pause_pct > 0:
+            pause_floor = equity_peak * (1.0 - sim_cfg.hwm_pause_pct / 100.0)
+            if equity < pause_floor:
+                entries_paused = True
+            elif equity >= pause_floor:
+                entries_paused = False
+
+        if not in_pos and pending_signal_i is not None:
+            saturday_block = sim_cfg.skip_saturday_entry and entry_day.dayofweek == 5
+            veto_block = entry_day in sim_cfg.blocked_entry_dates
+            hwm_block = entries_paused
+            if veto_block:
+                pending_signal_i = None
+            elif not saturday_block and not hwm_block:
+                signal_i = pending_signal_i
+                rv = float(df["vol20"].iloc[signal_i])
+                todays_size_frac = (
+                    min(strat_cfg.max_alloc, strat_cfg.vol_target / rv) if np.isfinite(rv) and rv > 0 else 0.0
+                )
+                if todays_size_frac > 0.0:
+                    entry_px = float(df["open"].iloc[i])
+                    sizing_base = equity if strat_cfg.compound else fixed_sizing_equity
+                    entry_notional = sizing_base * todays_size_frac
+                    qty = entry_notional / entry_px
+                    entry_fee = entry_notional * fee
+                    equity_before_entry = equity
+                    equity -= entry_fee
+                    day_pnl -= entry_fee
+                    in_pos = True
+                    entry_i = i
+                    signal_i_at_entry = signal_i
+                    size_frac = todays_size_frac
+                    peak_close = float(df["close"].iloc[i])
+                    action = "ENTRY"
+                    pending_signal_i = None
 
         if in_pos:
             cur_close = float(df["close"].iloc[i])
@@ -482,6 +515,13 @@ def simulate_account(
                 )
                 in_pos = False
 
+        pending_size_frac = 0.0
+        if pending_signal_i is not None and not in_pos:
+            rv_p = float(df["vol20"].iloc[pending_signal_i])
+            pending_size_frac = (
+                min(strat_cfg.max_alloc, strat_cfg.vol_target / rv_p) if np.isfinite(rv_p) and rv_p > 0 else 0.0
+            )
+
         curve.append(
             {
                 "date": entry_date.isoformat(),
@@ -492,6 +532,11 @@ def simulate_account(
                 "signal": todays_signal,
                 "size_frac": size_frac if in_pos else todays_size_frac,
                 "in_position": in_pos,
+                "pending_entry": pending_signal_i is not None and not in_pos,
+                "pending_signal_date": (
+                    df.index[pending_signal_i].isoformat() if pending_signal_i is not None else None
+                ),
+                "pending_size_frac": pending_size_frac,
             }
         )
 
@@ -894,6 +939,7 @@ def build_configs(args: argparse.Namespace) -> tuple[SimConfig, StrategyConfig]:
         write_files=args.write_files,
         out_dir=Path(args.out_dir),
         instrument=instrument,
+        skip_saturday_entry=default_skip_saturday_entry(args.source),
     )
     strat_cfg = StrategyConfig(
         lookback=args.lookback,

@@ -7,10 +7,10 @@
 //   XAUUSD  Dukascopy  lb30 buf100 cap225 hold9  sma200_95
 //   XAGUSD  Dukascopy  lb30 buf100 cap225 hold13 bull_only
 //   XCUUSD  Dukascopy  lb15 buf100 cap225 hold4  bull_only
-// Signal @ close → enter next session open (optional Sat skip for Dukascopy calendar).
+// Telegram: header date = SIG (closed bar). IN = next session open. OUT = hold complete @ close.
 indicator("Paper breakout check", shorttitle="PaperSig", overlay=true, max_labels_count=500)
 
-preset = input.string("BTCUSD", "Sleeve preset ($10k paper)", options=["Custom", "BTCUSD", "ETHUSDT", "BNBUSDT", "XAUUSD", "XAGUSD", "XCUUSD"])
+preset_in = input.string("Auto", "Sleeve preset ($10k paper)", options=["Auto", "Custom", "BTCUSD", "ETHUSDT", "BNBUSDT", "XAUUSD", "XAGUSD", "XCUUSD"])
 show_prior_high = input.bool(true, "Plot prior-high level")
 show_trade_bg = input.bool(true, "Shade bars in paper trade")
 mark_days = input.int(120, "Date labels within last N days", minval=14)
@@ -21,6 +21,18 @@ buffer_c = input.float(100.0, "Buffer bps (Custom)", step=1)
 max_bb_c = input.float(225.0, "Max breakout bps, 0=off (Custom)", step=1)
 hold_c = input.int(5, "Hold days (Custom)", minval=1)
 trend_c = input.string("bull_only", "Trend (Custom)", options=["all", "bull_only", "bear_only", "sma200", "sma200_95", "sma200_90", "sma100", "sma50", "sma50_slope_up", "sma200_slope_up"])
+
+ticker_u = str.upper(syminfo.ticker)
+auto_preset() =>
+    str.contains(ticker_u, "ETH") ? "ETHUSDT" :
+     str.contains(ticker_u, "BNB") ? "BNBUSDT" :
+     str.contains(ticker_u, "XAU") or str.contains(ticker_u, "GOLD") ? "XAUUSD" :
+     str.contains(ticker_u, "XAG") or str.contains(ticker_u, "SILVER") ? "XAGUSD" :
+     str.contains(ticker_u, "XCU") or str.contains(ticker_u, "COPPER") or str.contains(ticker_u, "HG") ? "XCUUSD" :
+     str.contains(ticker_u, "BTC") ? "BTCUSD" :
+     "BTCUSD"
+
+preset = preset_in == "Auto" ? auto_preset() : preset_in
 
 lookback = preset == "Custom" ? lookback_c : preset == "ETHUSDT" ? 10 : (preset == "BTCUSD" or preset == "XCUUSD" or preset == "BNBUSDT" ? 15 : 30)
 buffer_bps = preset == "Custom" ? buffer_c : preset == "ETHUSDT" ? 150.0 : (preset == "BTCUSD" or preset == "BNBUSDT" ? 125.0 : 100.0)
@@ -66,9 +78,12 @@ var bool in_pos = false
 var int hold_count = 0
 var float entry_px = na
 var bool entry_armed = false
+var string sig_date_txt = na
 
+was_in_pos = in_pos[1]
 if signal and not in_pos
     entry_armed := true
+    sig_date_txt := fmt_d()
 
 today_can_enter = not skip_sat_entry or dayofweek(time) != dayofweek.saturday
 entered = entry_armed and not in_pos and today_can_enter
@@ -79,6 +94,7 @@ if entered
     hold_count := 1
     entry_px := open
     entry_armed := false
+    sig_date_txt := na
 else if in_pos
     hold_count += 1
     if hold_count >= hold_days
@@ -87,6 +103,10 @@ else if in_pos
         hold_count := 0
         entry_px := na
 
+// SIG only on a new flat-to-signal transition (not while already long); allow exit+signal same bar
+new_signal_mark = signal and not in_pos and (not was_in_pos or exited)
+pending_mark = entry_armed and not in_pos and not entered
+
 in_trade_bar = in_pos or exited
 unreal_pct = in_pos and not na(entry_px) and entry_px != 0.0 ? 100.0 * (close / entry_px - 1.0) : na
 in_label_window = time >= timenow - mark_days * 86400000
@@ -94,11 +114,12 @@ in_label_window = time >= timenow - mark_days * 86400000
 bgcolor(show_trade_bg and in_trade_bar ? color.new(color.teal, 88) : na, title="In trade")
 plot(show_prior_high ? prior_high : na, "Prior high", color=color.new(color.orange, 35), linewidth=1, style=plot.style_stepline)
 
-plotshape(signal and in_label_window, title="Signal (close)", style=shape.circle, location=location.belowbar, size=size.tiny, color=color.new(color.gray, 0), text="SIG")
+plotshape(new_signal_mark and in_label_window, title="Signal (close)", style=shape.circle, location=location.belowbar, size=size.tiny, color=color.new(color.gray, 0), text="SIG")
+plotshape(pending_mark and in_label_window, title="Armed (next open)", style=shape.diamond, location=location.belowbar, size=size.tiny, color=color.new(color.yellow, 0), text="ARM")
 plotshape(entered and in_label_window, title="Entry (open)", style=shape.triangleup, location=location.belowbar, size=size.small, color=color.new(color.teal, 0), text="IN")
 plotshape(exited and in_label_window, title="Exit (close)", style=shape.triangledown, location=location.abovebar, size=size.small, color=color.new(color.red, 0), text="OUT")
 
-if signal and in_label_window
+if new_signal_mark and in_label_window
     label.new(bar_index, low, "SIG " + fmt_d(), style=label.style_label_up, color=color.new(color.gray, 30), textcolor=color.white, size=size.tiny)
 if entered and in_label_window
     label.new(bar_index, low, "IN " + fmt_d(), style=label.style_label_up, color=color.new(color.teal, 20), textcolor=color.white, size=size.small)
@@ -108,9 +129,11 @@ if exited and in_label_window
 var label status = na
 if barstate.islast
     label.delete(status)
-    pending = signal and not in_pos
-    last_sig = signal ? fmt_d() : "—"
-    status_txt = pending ? "Pending SIG " + last_sig + " → next open" : in_pos ? "LONG " + str.tostring(hold_count) + "/" + str.tostring(hold_days) + " " + str.tostring(unreal_pct, "#.##") + "%" : "Flat"
-    detail = preset + " $10k | " + data_note + " | lb" + str.tostring(lookback) + " buf" + str.tostring(buffer_bps, "#") + " hold" + str.tostring(hold_days) + " " + trend_mode
+    auto_note = preset_in == "Auto" ? " (Auto→" + preset + ")" : ""
+    pending = entry_armed and not in_pos
+    sig_txt = pending and not na(sig_date_txt) ? sig_date_txt : "—"
+    status_txt = pending ? "Pending SIG " + sig_txt + " → next open" : in_pos ? "LONG " + str.tostring(hold_count) + "/" + str.tostring(hold_days) + " " + str.tostring(unreal_pct, "#.##") + "%" : "Flat"
+    detail = preset + auto_note + " $10k | " + data_note + " | lb" + str.tostring(lookback) + " buf" + str.tostring(buffer_bps, "#") + " hold" + str.tostring(hold_days) + " " + trend_mode
     detail += "\nbar " + fmt_d() + " | SIG date = Telegram closed bar"
+    detail += "\nTV OHLC may differ from Dukascopy/Binance bot feed"
     status := label.new(bar_index, high, status_txt + "\n" + detail, style=label.style_label_lower_left, color=color.new(color.black, 15), textcolor=color.white, size=size.small)

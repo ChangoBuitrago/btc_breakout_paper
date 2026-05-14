@@ -32,6 +32,7 @@ from btc_breakout_paper_sim import (  # noqa: E402
     StrategyConfig,
     TREND_MODE_CHOICES,
     add_indicators,
+    default_skip_saturday_entry,
     fmt,
     fmt_pf,
     latest_signal_report,

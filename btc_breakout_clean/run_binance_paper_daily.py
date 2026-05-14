@@ -41,6 +41,7 @@ from btc_breakout_paper_sim import (  # noqa: E402
     StrategyConfig,
     TREND_MODE_CHOICES,
     add_indicators,
+    default_skip_saturday_entry,
     dukascopy_cache_path,
     fetch_dukascopy_instrument,
     fmt,
@@ -197,10 +198,33 @@ def summarize_open_position(
     }
 
 
+def summarize_pending_entry(
+    curve: pd.DataFrame,
+    *,
+    open_position: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if open_position is not None or curve.empty:
+        return None
+    row = curve.iloc[-1]
+    if bool(row.get("in_position")):
+        return None
+    if not bool(row.get("pending_entry")):
+        return None
+    size_frac = float(row.get("pending_size_frac") or 0.0)
+    signal_date = row.get("pending_signal_date")
+    if not signal_date:
+        return None
+    return {
+        "signal_date": str(signal_date)[:10],
+        "size_frac": size_frac,
+    }
+
+
 def signal_status(
     latest: dict[str, Any],
     strat_cfg: StrategyConfig,
     open_pos: dict[str, Any] | None = None,
+    pending: dict[str, Any] | None = None,
 ) -> str:
     if open_pos:
         return (
@@ -208,7 +232,16 @@ def signal_status(
             f"{open_pos['unrealized_pct']:+.1f}% vs entry "
             f"(exit ~{open_pos['exit_target']})"
         )
+    if pending:
+        if pending["size_frac"] > 0.0:
+            return (
+                f"pending → next open (SIG {pending['signal_date']}, "
+                f"~{100.0 * pending['size_frac']:.0f}% size)"
+            )
+        return f"pending blocked size 0 (SIG {pending['signal_date']})"
     if latest["signal"]:
+        if float(latest.get("next_size_frac") or 0.0) <= 0.0:
+            return "signal blocked (size 0)"
         return "signal → next open"
     if not latest.get("regime_on", latest["bull"]):
         if latest.get("breakout_bps") is None:
@@ -238,7 +271,20 @@ def build_telegram_message(*, results: list[dict[str, Any]]) -> str:
     year_return = total_year_pnl / starting_equity if starting_equity else 0.0
     annualized = 100.0 * ((1.0 + year_return) ** (1.0 / elapsed_years) - 1.0) if year_return > -1.0 else -100.0
 
-    pending = [r["symbol"] for r in results if r["latest"]["signal"] and not r.get("open_position")]
+    pending = [
+        r["symbol"]
+        for r in results
+        if r.get("pending_entry")
+        and float(r["pending_entry"].get("size_frac") or 0.0) > 0.0
+        and not r.get("open_position")
+    ]
+    pending_rows = [
+        r
+        for r in results
+        if r.get("pending_entry")
+        and float(r["pending_entry"].get("size_frac") or 0.0) > 0.0
+        and not r.get("open_position")
+    ]
     open_rows = [r for r in results if r.get("open_position")]
 
     if pending:
@@ -256,6 +302,7 @@ def build_telegram_message(*, results: list[dict[str, Any]]) -> str:
         latest = result["latest"]
         strat_cfg = result["strat_cfg"]
         open_pos = result.get("open_position")
+        pending_entry = result.get("pending_entry")
         year_summary = result["year_summary"]
         pnl = float(year_summary["pnl"])
         if flat_ytd:
@@ -263,9 +310,20 @@ def build_telegram_message(*, results: list[dict[str, Any]]) -> str:
         else:
             share_col = f"{100.0 * pnl / total_year_pnl:.1f}%"
         lines.append(
-            f"{result['symbol']} [${per_sleeve:,.0f}]: {signal_status(latest, strat_cfg, open_pos)} | "
+            f"{result['symbol']} [${per_sleeve:,.0f}]: "
+            f"{signal_status(latest, strat_cfg, open_pos, pending_entry)} | "
             f"{fmt_signed_money(pnl)} | {share_col}"
         )
+
+    if pending_rows:
+        lines.append("")
+        lines.append("Pending entry (next open):")
+        for result in pending_rows:
+            pe = result["pending_entry"]
+            lines.append(
+                f"{result['symbol']}: SIG {pe['signal_date']} → enter next session | "
+                f"~{100.0 * float(pe['size_frac']):.0f}% of sleeve"
+            )
 
     if open_rows:
         lines.append("")
@@ -363,12 +421,14 @@ def run_symbol(args: argparse.Namespace, symbol: str, state_dir: Path, log_path:
         write_files=False,
         out_dir=Path("."),
         instrument=symbol.upper(),
+        skip_saturday_entry=default_skip_saturday_entry(source),
     )
 
     df = add_indicators(raw, strat_cfg)
     trades, curve, summary = simulate_account(df, sim_cfg=sim_cfg, strat_cfg=strat_cfg)
     latest = latest_signal_report(df, strat_cfg)
     open_position = summarize_open_position(curve, df, strat_cfg)
+    pending_entry = summarize_pending_entry(curve, open_position=open_position)
     event = classify_event(previous, latest, trades)
     year_summary = summarize_signal_year(trades, curve, signal_date=latest["signal_date"])
     state_written = not args.no_write
@@ -382,7 +442,7 @@ def run_symbol(args: argparse.Namespace, symbol: str, state_dir: Path, log_path:
     print(f"  Daily event: {event}")
     print(f"  Fake equity: ${fmt(summary['final_equity'])}")
     print(f"  Current-year PnL: ${fmt(year_summary['pnl'])}")
-    print(f"  Next action: {'PAPER ENTER LONG' if latest['signal'] and not open_position else 'IN POSITION' if open_position else 'NO TRADE'}")
+    print(f"  Next action: {'PAPER ENTER LONG' if pending_entry and pending_entry.get('size_frac', 0) > 0 else 'IN POSITION' if open_position else 'NO TRADE'}")
     if state_written:
         print(f"  Run log: {log_path}")
     print("-" * 92)
@@ -397,6 +457,7 @@ def run_symbol(args: argparse.Namespace, symbol: str, state_dir: Path, log_path:
         "equity": equity,
         "strat_cfg": strat_cfg,
         "open_position": open_position,
+        "pending_entry": pending_entry,
     }
 
 

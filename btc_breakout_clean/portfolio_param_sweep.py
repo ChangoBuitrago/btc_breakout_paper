@@ -35,6 +35,7 @@ from btc_breakout_paper_sim import (  # noqa: E402
     TREND_MODE_CHOICES,
     add_indicators,
     cagr,
+    default_skip_saturday_entry,
     dukascopy_cache_path,
     fetch_source_data,
     max_drawdown,
@@ -65,6 +66,7 @@ def _sim_cfg(symbol: str, equity: float) -> SimConfig:
         write_files=False,
         out_dir=Path("."),
         instrument=sym,
+        skip_saturday_entry=default_skip_saturday_entry(src),
     )
 
 
