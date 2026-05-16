@@ -246,7 +246,7 @@ def quiet_dukascopy_logs():
 
 
 def dukascopy_cache_path(instrument: str) -> Path:
-    return Path(f"btc_breakout_clean/cache/{instrument.upper()}_dukascopy_h1.csv")
+    return Path(__file__).resolve().parent / "cache" / f"{instrument.upper()}_dukascopy_h1.csv"
 
 
 def resolve_dukascopy_instrument(instrument: str) -> str:

@@ -11,6 +11,7 @@ Minimal local dashboard — what Telegram does *not* show:
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -22,8 +23,15 @@ import streamlit as st
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-from btc_breakout_binance_paper_bot import LIVE_SLEEVE_EQUITY, LIVE_SYMBOLS, live_symbol_source
-from run_binance_paper_daily import run_symbol, signal_status
+from btc_breakout_binance_paper_bot import (
+    LIVE_SLEEVE_EQUITY,
+    LIVE_SYMBOLS,
+    live_strategy_config,
+    live_symbol_equity,
+    live_symbol_source,
+)
+from btc_breakout_paper_sim import dukascopy_cache_path
+from run_binance_paper_daily import run_symbol, signal_status, summarize_signal_year
 
 VIEW_START = pd.Timestamp("2026-01-01", tz="UTC")
 MIN_BAR_RET = 0.12  # minimum |return %| so flat sleeves stay visible on chart
@@ -67,22 +75,76 @@ def _args(*, refresh_cache: bool = False) -> argparse.Namespace:
     )
 
 
+def load_symbol_from_disk(symbol: str) -> dict[str, Any] | None:
+    sym = symbol.upper()
+    state_dir = HERE / "paper_portfolio" / sym
+    equity_path = state_dir / "equity.csv"
+    state_path = state_dir / "state.json"
+    if not equity_path.exists() or not state_path.exists():
+        return None
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    curve = pd.read_csv(equity_path)
+    trades_path = state_dir / "trades.csv"
+    trades = pd.read_csv(trades_path) if trades_path.exists() else pd.DataFrame()
+    latest = state.get("latest_signal") or {}
+    summary = state.get("summary") or {}
+    strat_cfg = live_strategy_config(sym)
+    equity = live_symbol_equity(sym, LIVE_SLEEVE_EQUITY)
+    signal_date = str(latest.get("signal_date") or curve.iloc[-1].get("signal_date", ""))
+    year_summary = summarize_signal_year(trades, curve, signal_date=signal_date)
+
+    open_position = None
+    pending_entry = None
+    if not curve.empty:
+        row = curve.iloc[-1]
+        if bool(row.get("pending_entry")) and not bool(row.get("in_position")):
+            pending_entry = {
+                "signal_date": str(row.get("pending_signal_date", ""))[:10],
+                "size_frac": float(row.get("pending_size_frac") or 0.0),
+            }
+
+    return {
+        "symbol": sym,
+        "event": "DISK",
+        "summary": summary,
+        "latest": latest,
+        "year_summary": year_summary,
+        "state_path": state_path,
+        "equity": equity,
+        "strat_cfg": strat_cfg,
+        "open_position": open_position,
+        "pending_entry": pending_entry,
+        "curve": curve,
+        "trades": trades,
+        "from_disk": True,
+    }
+
+
 @st.cache_data(show_spinner=False, ttl=3600)
-def load_symbol(symbol: str, refresh_cache: bool) -> dict[str, Any]:
+def load_symbol(symbol: str, refresh_cache: bool, *, full_replay: bool = False) -> dict[str, Any]:
+    if not full_replay and not refresh_cache:
+        disk = load_symbol_from_disk(symbol)
+        if disk is not None:
+            return disk
     args = _args(refresh_cache=refresh_cache)
     return run_symbol(args, symbol, Path(args.state_dir), Path(args.state_dir) / "run_log.csv")
 
 
-def load_all(refresh_cache: bool) -> list[dict[str, Any]]:
+def load_all(refresh_cache: bool, *, full_replay: bool = False) -> list[dict[str, Any]]:
     n = len(LIVE_SYMBOLS)
-    if not any((HERE / "cache" / f"{s}_dukascopy_h1.csv").exists() for s in LIVE_SYMBOLS if live_symbol_source(s) == "dukascopy"):
-        if not refresh_cache:
-            st.caption("First load downloads Dukascopy history (5–15 min). Later loads use cache.")
-    bar = st.progress(0.0, text=f"Loading 0/{n}…")
+    dukas = [s for s in LIVE_SYMBOLS if live_symbol_source(s) == "dukascopy"]
+    if not any(dukascopy_cache_path(s).exists() for s in dukas):
+        if not refresh_cache and not full_replay:
+            st.caption("First full replay downloads Dukascopy history (5–15 min). Run daily bot once to cache.")
+    mode = "full replay" if full_replay or refresh_cache else "saved state"
+    bar = st.progress(0.0, text=f"Loading 0/{n} ({mode})…")
     out: list[dict[str, Any]] = []
     for i, sym in enumerate(LIVE_SYMBOLS):
-        bar.progress((i + 1) / n, text=f"Loading {sym} ({i + 1}/{n})…")
-        out.append(load_symbol(sym, refresh_cache))
+        bar.progress((i + 1) / n, text=f"Loading {sym} ({i + 1}/{n}, {mode})…")
+        out.append(load_symbol(sym, refresh_cache, full_replay=full_replay))
     bar.empty()
     return out
 
@@ -370,18 +432,26 @@ def main() -> None:
 
     btn_col, title_col = st.columns([1, 11], gap="small", vertical_alignment="center")
     with btn_col:
-        if st.button("↻", key="refresh", help="Reload portfolio", use_container_width=True):
+        if st.button("↻", key="refresh", help="Full replay (slow)", use_container_width=True):
+            st.session_state["full_replay"] = True
             load_symbol.clear()
             st.rerun()
     with title_col:
         st.title("Paper book · 2026+")
 
+    full_replay = bool(st.session_state.pop("full_replay", False))
     try:
-        results = load_all(refresh_cache=False)
+        with st.spinner("Loading portfolio…" if not full_replay else "Full replay (several minutes)…"):
+            results = load_all(refresh_cache=False, full_replay=full_replay)
     except Exception as exc:
         st.error(str(exc))
-        st.caption("Use `./btc_breakout_clean/run_dashboard.sh` (Python 3.10+).")
+        st.caption("Run `./btc_breakout_clean/run_dashboard.sh` from repo root (Python 3.10+).")
         return
+
+    if not full_replay and all(r.get("from_disk") for r in results):
+        st.caption("Loaded from saved paper state · ↻ runs full replay")
+    elif full_replay:
+        st.caption("Full replay complete")
 
     port = port_equity(results)
     last_bar = results[0]["latest"]["signal_date"][:10]
