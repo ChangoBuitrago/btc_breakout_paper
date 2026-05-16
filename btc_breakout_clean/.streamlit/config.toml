@@ -1,0 +1,14 @@
+[browser]
+gatherUsageStats = false
+
+[server]
+headless = false
+
+[theme]
+# Warm terminal-style dark UI (no default Streamlit blue)
+base = "dark"
+primaryColor = "#d4a855"
+backgroundColor = "#101014"
+secondaryBackgroundColor = "#1a1a22"
+textColor = "#e8e8ec"
+font = "sans serif"

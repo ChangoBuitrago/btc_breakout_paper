@@ -2,8 +2,9 @@
 # Run the paper portfolio dashboard (needs Python >= 3.10 for dukascopy-python).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-cd "$ROOT"
-VENV="$ROOT/btc_breakout_clean/.venv-dashboard"
+HERE="$ROOT/btc_breakout_clean"
+cd "$HERE"
+VENV="$HERE/.venv-dashboard"
 
 PY=""
 for candidate in python3.12 python3.11 python3.10 python3; do
@@ -30,5 +31,5 @@ fi
 # shellcheck source=/dev/null
 source "$VENV/bin/activate"
 python -m pip install -q --upgrade pip
-python -m pip install -q -r btc_breakout_clean/requirements-dashboard.txt
-exec python -m streamlit run btc_breakout_clean/paper_dashboard.py --server.port 8501 "$@"
+python -m pip install -q -r requirements-dashboard.txt
+exec python -m streamlit run paper_dashboard.py --server.port 8501 "$@"

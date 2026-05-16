@@ -1,5 +1,6 @@
 streamlit>=1.28
 pandas>=2.0
+altair>=5.0
 dukascopy-python>=4.0
 
 # Python >= 3.10. Use ./btc_breakout_clean/run_dashboard.sh

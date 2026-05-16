@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -25,6 +26,26 @@ from btc_breakout_binance_paper_bot import LIVE_SLEEVE_EQUITY, LIVE_SYMBOLS, liv
 from run_binance_paper_daily import run_symbol, signal_status
 
 VIEW_START = pd.Timestamp("2026-01-01", tz="UTC")
+MIN_BAR_RET = 0.12  # minimum |return %| so flat sleeves stay visible on chart
+
+# Dashboard palette (dark UI, warm accent — avoid default Streamlit blues)
+ACCENT = "#d4a855"
+BG_CHART = "#101014"
+GRID = "#2a2a34"
+AXIS = "#6b7280"
+TEXT_DIM = "#9ca3af"
+UP = "#4ade80"
+DOWN = "#fb7185"
+FLAT_BAR = "#71717a"
+
+
+def short_sym(symbol: str) -> str:
+    s = symbol.upper()
+    if s.endswith("USDT"):
+        return s[:-4]
+    if s.endswith("USD"):
+        return s[:-3]
+    return s
 
 
 def _args(*, refresh_cache: bool = False) -> argparse.Namespace:
@@ -171,16 +192,189 @@ def pnl_since(series: pd.Series, start: pd.Timestamp) -> float:
     return float(series.iloc[-1]) - base
 
 
+def portfolio_pct_chart(pct: pd.Series) -> alt.Chart:
+    df = pct.reset_index()
+    df.columns = ["date", "pct"]
+    line = (
+        alt.Chart(df)
+        .mark_line(color=ACCENT, strokeWidth=2.75, interpolate="monotone")
+        .encode(
+            x=alt.X("date:T", title=None, axis=alt.Axis(format="%b %d", labelAngle=0, tickCount=8)),
+            y=alt.Y("pct:Q", title="% vs Jan 1", scale=alt.Scale(zero=False)),
+            tooltip=[
+                alt.Tooltip("date:T", title="date", format="%Y-%m-%d"),
+                alt.Tooltip("pct:Q", title="portfolio %", format="+.2f"),
+            ],
+        )
+    )
+    rule = alt.Chart(pd.DataFrame({"y": [0.0]})).mark_rule(color=GRID, strokeDash=[5, 4]).encode(y="y:Q")
+    return (
+        alt.layer(rule, line)
+        .properties(height=240)
+        .configure(background=BG_CHART)
+        .configure_view(strokeWidth=0)
+        .configure_axis(grid=True, gridColor=GRID, domainColor=GRID, tickColor=GRID, labelColor=AXIS, titleColor=TEXT_DIM)
+    )
+
+
+def sleeve_stats(results: list[dict[str, Any]]) -> pd.DataFrame:
+    rows = []
+    for r in results:
+        s = eq_series(r["curve"])
+        ret = ret_pct_since(s, VIEW_START)
+        pnl = pnl_since(s, VIEW_START)
+        if ret > 0.01:
+            sign = "up"
+        elif ret < -0.01:
+            sign = "down"
+        else:
+            sign = "flat"
+        if abs(ret) < MIN_BAR_RET:
+            ret_plot = MIN_BAR_RET if ret >= 0 else -MIN_BAR_RET
+        else:
+            ret_plot = ret
+        rows.append(
+            {
+                "symbol": r["symbol"],
+                "label": short_sym(r["symbol"]),
+                "pnl_2026": pnl,
+                "ret_2026": ret,
+                "ret_plot": ret_plot,
+                "ret_label": f"{ret:+.2f}%",
+                "pnl_label": f"${pnl:+,.0f}",
+                "sign": sign,
+            }
+        )
+    return pd.DataFrame(rows).sort_values("ret_2026", ascending=True)
+
+
+def ret_bar_chart(stats: pd.DataFrame) -> alt.Chart:
+    lo = float(stats["ret_plot"].min())
+    hi = float(stats["ret_plot"].max())
+    pad = max(0.35, (hi - lo) * 0.12)
+    x_domain = [min(lo, 0) - pad, max(hi, 0) + pad]
+
+    bars = (
+        alt.Chart(stats)
+        .mark_bar(size=22, cornerRadiusEnd=3)
+        .encode(
+            y=alt.Y(
+                "label:N",
+                sort=alt.EncodingSortField(field="ret_2026", order="ascending"),
+                title=None,
+                axis=alt.Axis(labelLimit=80),
+            ),
+            x=alt.X(
+                "ret_plot:Q",
+                title="return % since 2026-01-01",
+                scale=alt.Scale(domain=x_domain, zero=True),
+            ),
+            color=alt.Color(
+                "sign:N",
+                scale=alt.Scale(
+                    domain=["up", "flat", "down"],
+                    range=[UP, FLAT_BAR, DOWN],
+                ),
+                legend=alt.Legend(
+                    title=None,
+                    orient="top",
+                    direction="horizontal",
+                    labelExpr="datum.value == 'up' ? 'gain' : datum.value == 'down' ? 'loss' : 'flat'",
+                ),
+            ),
+            tooltip=[
+                alt.Tooltip("symbol:N", title="sleeve"),
+                alt.Tooltip("ret_2026:Q", title="return %", format="+.2f"),
+                alt.Tooltip("pnl_2026:Q", title="PnL $", format="+,.0f"),
+            ],
+        )
+    )
+    labels = (
+        alt.Chart(stats)
+        .mark_text(align="left", dx=4, fontSize=12, fontWeight=600)
+        .encode(
+            y=alt.Y("label:N", sort=alt.EncodingSortField(field="ret_2026", order="ascending")),
+            x=alt.X("ret_plot:Q"),
+            text=alt.Text("ret_label:N"),
+            color=alt.Color(
+                "sign:N",
+                scale=alt.Scale(
+                    domain=["up", "flat", "down"],
+                    range=[UP, FLAT_BAR, DOWN],
+                ),
+                legend=None,
+            ),
+        )
+    )
+    pnl_labels = (
+        alt.Chart(stats)
+        .mark_text(align="right", dx=-6, fontSize=11, color=TEXT_DIM)
+        .encode(
+            y=alt.Y("label:N", sort=alt.EncodingSortField(field="ret_2026", order="ascending")),
+            x=alt.X("ret_plot:Q"),
+            text=alt.Text("pnl_label:N"),
+        )
+    )
+    zero = alt.Chart(pd.DataFrame({"x": [0]})).mark_rule(color=AXIS, strokeWidth=1).encode(x="x:Q")
+    return (
+        (bars + labels + pnl_labels + zero)
+        .properties(height=max(240, 44 * len(stats)))
+        .configure(background=BG_CHART)
+        .configure_view(strokeWidth=0)
+        .configure_axis(grid=False, domainColor=GRID, tickColor=GRID, labelColor=AXIS, titleColor=TEXT_DIM)
+    )
+
+
+def color_signed(val: float) -> str:
+    if pd.isna(val):
+        return ""
+    if val > 0:
+        return f"color: {UP}; font-weight: 600"
+    if val < 0:
+        return f"color: {DOWN}; font-weight: 600"
+    return f"color: {TEXT_DIM}; font-weight: 500"
+
+
 def main() -> None:
     st.set_page_config(page_title="Paper · 2026+", layout="wide", initial_sidebar_state="collapsed")
 
-    c1, c2 = st.columns([5, 1])
-    with c1:
-        st.title("Paper book · 2026+")
-    with c2:
-        if st.button("↻ Refresh"):
+    st.markdown(
+        f"""
+        <style>
+            .block-container {{ padding-top: 2.75rem; max-width: 100%; }}
+            header[data-testid="stHeader"] {{
+                background: rgba(16, 16, 20, 0.92);
+                border-bottom: 1px solid #2a2a34;
+            }}
+            h1 {{ font-weight: 650 !important; letter-spacing: -0.02em; color: #f4f4f8 !important;
+                  margin-bottom: 0 !important; padding-top: 0 !important; }}
+            h2 {{ font-size: 1.05rem !important; font-weight: 600 !important;
+                  color: #ececf1 !important; border-left: 3px solid {ACCENT};
+                  padding-left: 0.6rem; margin-top: 1.35rem !important; margin-bottom: 0.5rem !important; }}
+            div[data-testid="stExpander"] summary {{ color: #c8c8d0 !important; }}
+            div[data-testid="stHorizontalBlock"]:has(div[data-testid="column"]:first-child button) {{
+                align-items: center;
+            }}
+            div[data-testid="column"]:has(button) {{
+                display: flex;
+                align-items: center;
+                justify-content: flex-start;
+            }}
+            div[data-testid="column"]:has(button) button {{
+                margin-top: 0;
+            }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    btn_col, title_col = st.columns([1, 11], gap="small", vertical_alignment="center")
+    with btn_col:
+        if st.button("↻", key="refresh", help="Reload portfolio", use_container_width=True):
             load_symbol.clear()
             st.rerun()
+    with title_col:
+        st.title("Paper book · 2026+")
 
     try:
         results = load_all(refresh_cache=False)
@@ -200,27 +394,23 @@ def main() -> None:
         f"**{last_bar}** UTC close · **2026 PnL {port_pnl:+,.0f}** ({port_ret:+.2f}%) · "
         f"max DD since Jan-1 **{port_dd:.2f}%**"
     )
-    if port_base_2026 is not None:
-        st.caption(
-            f"2026 return is on book equity at 2026-01-01 (${port_base_2026:,.0f} across 6 sleeves). "
-            f"Replay still warms up from 2018 internally; nothing here is lifetime PnL."
-        )
 
-    # --- Chart: portfolio % since 2026 (Telegram has no curve) ---
+    # --- Chart: portfolio % since 2026 (Altair — warm accent, no default blue line_chart) ---
     view = port[port.index >= VIEW_START]
     if not view.empty and port_base_2026:
         pct = (view / port_base_2026 - 1.0) * 100.0
-        st.line_chart(pd.DataFrame({"portfolio % since 2026": pct}), height=220)
+        st.altair_chart(portfolio_pct_chart(pct), use_container_width=True)
 
-    # --- Attribution: per-sleeve return % since 2026 (TG shows $ share of YTD, not sleeve return) ---
-    attrib = {}
-    for r in results:
-        attrib[r["symbol"]] = ret_pct_since(eq_series(r["curve"]), VIEW_START)
-    st.caption("Return % per sleeve since 2026-01-01 (on each $10k sleeve, compounded)")
-    st.bar_chart(pd.DataFrame({"return %": attrib}), height=180)
+    # --- Per-sleeve return % since 2026 (non-flat only on chart) ---
+    stats = sleeve_stats(results)
+    chart_stats = stats.loc[stats["sign"] != "flat"].copy()
+    if not chart_stats.empty:
+        st.subheader("Sleeves since 2026")
+        st.altair_chart(ret_bar_chart(chart_stats), use_container_width=True)
 
     # --- Scan table: one row per sleeve ---
     rows = []
+    stats_by_sym = stats.set_index("symbol")
     for r in results:
         sym = r["symbol"]
         latest = r["latest"]
@@ -228,11 +418,13 @@ def main() -> None:
         curve = r["curve"]
         trades = r["trades"]
         op = r.get("open_position")
+        st_row = stats_by_sym.loc[sym]
         row = {
             "": state_label(r),
             "symbol": sym,
-            "pnl_2026_$": round(pnl_since(eq_series(curve), VIEW_START), 0),
-            "ret_2026_%": round(ret_pct_since(eq_series(curve), VIEW_START), 2),
+            "2026": "▲" if st_row["sign"] == "up" else ("▼" if st_row["sign"] == "down" else "—"),
+            "pnl_2026_$": round(float(st_row["pnl_2026"]), 0),
+            "ret_2026_%": round(float(st_row["ret_2026"]), 2),
             "trades_26": trades_2026_count(trades),
             "exposure_%": round(exposure_since(curve, VIEW_START), 1),
             "last_exit": last_trade_2026(trades),
@@ -246,13 +438,17 @@ def main() -> None:
             row["exit_on"] = None
         rows.append(row)
 
-    st.caption("Today’s gate / status (Telegram text) in sidebar expander below table.")
+    scan = pd.DataFrame(rows).sort_values("ret_2026_%", ascending=False)
+    styled = scan.style.map(color_signed, subset=["pnl_2026_$", "ret_2026_%"])
+
+    st.caption("Today’s gate / status (Telegram text) in expander below.")
     st.dataframe(
-        pd.DataFrame(rows),
+        styled,
         use_container_width=True,
         hide_index=True,
         column_config={
             "": st.column_config.TextColumn("state", width="small"),
+            "2026": st.column_config.TextColumn("", width="small"),
             "pnl_2026_$": st.column_config.NumberColumn("PnL 2026 $", format="%.0f"),
             "ret_2026_%": st.column_config.NumberColumn("ret 2026 %", format="%.2f"),
             "trades_26": st.column_config.NumberColumn("trades", format="%d"),
@@ -285,7 +481,8 @@ def main() -> None:
         all_t["net_pnl"] = pd.to_numeric(all_t["net_pnl"]).round(0)
         all_t["open_to_exit_pct"] = pd.to_numeric(all_t["open_to_exit_pct"]).round(1)
         all_t["size_frac"] = (pd.to_numeric(all_t["size_frac"]) * 100).round(0)
-        st.dataframe(all_t.head(20), use_container_width=True, hide_index=True)
+        trade_styled = all_t.head(20).style.map(color_signed, subset=["net_pnl", "open_to_exit_pct"])
+        st.dataframe(trade_styled, use_container_width=True, hide_index=True)
     else:
         st.write("No exits yet in 2026.")
 
