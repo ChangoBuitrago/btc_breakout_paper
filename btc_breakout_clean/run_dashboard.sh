@@ -33,11 +33,11 @@ source "$VENV/bin/activate"
 python -m pip install -q --upgrade pip
 python -m pip install -q -r requirements-dashboard.txt
 
-PORT=8501
-if lsof -ti:"$PORT" >/dev/null 2>&1; then
-  echo "Stopping existing process on port $PORT…" >&2
-  lsof -ti:"$PORT" | xargs kill -9 2>/dev/null || true
+DASHBOARD_PORT=8501
+if lsof -ti:"${DASHBOARD_PORT}" >/dev/null 2>&1; then
+  echo "Stopping existing process on port ${DASHBOARD_PORT}..." >&2
+  lsof -ti:"${DASHBOARD_PORT}" | xargs kill -9 2>/dev/null || true
   sleep 1
 fi
 
-exec python -m streamlit run paper_dashboard.py --server.port "$PORT" "$@"
+exec python -m streamlit run paper_dashboard.py --server.port "${DASHBOARD_PORT}" "$@"
