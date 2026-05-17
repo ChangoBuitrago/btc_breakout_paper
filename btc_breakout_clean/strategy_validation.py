@@ -388,6 +388,29 @@ def main() -> None:
             f"PF={m['profit_factor']:.3f} passes={row['passes_baseline']}"
         )
 
+    add_path = HERE / "add_sleeve_validation_results.json"
+    if add_path.exists():
+        add_data = json.loads(add_path.read_text(encoding="utf-8"))
+        report["add_sleeve_us500"] = {
+            "promotion_count": add_data.get("promotion_count"),
+            "enable_live": add_data.get("enable_live"),
+            "promoted": add_data.get("promoted"),
+            "baseline_6": add_data.get("baseline_6_sleeve"),
+        }
+        OUT_PATH.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+        print("\n=== ADD SLEEVE (US500) — see add_sleeve_validation_results.json ===")
+        promoted = add_data.get("promoted")
+        if promoted:
+            m = promoted.get("book_7_metrics", {})
+            print(
+                f"  best 7-book: ret={m.get('return_pct', 0):.2f}% "
+                f"DD={m.get('max_drawdown_pct', 0):.2f}% "
+                f"PF={m.get('profit_factor', 0):.3f} "
+                f"passes={promoted.get('passes_promotion')}"
+            )
+        else:
+            print("  no promoted US500 config yet — run add_sleeve_validation.py")
+
     print(f"\nFull JSON: {OUT_PATH}")
 
 

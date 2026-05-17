@@ -7,10 +7,11 @@
 //   XAUUSD  Dukascopy  lb30 buf100 cap225 hold9-15  sma200_95
 //   XAGUSD  Dukascopy  lb30 buf100 cap225 hold13-15 bull_only
 //   XCUUSD  Dukascopy  lb15 buf100 cap225 hold4-5   bull_only
+//   US500   Dukascopy  lb20 buf100 cap225 hold10-18 sma200_95
 // Telegram: header date = SIG (closed bar). IN = next session open. OUT = dynamic hold @ close.
 indicator("Paper breakout check", shorttitle="PaperSig", overlay=true, max_labels_count=500)
 
-preset_in = input.string("Auto", "Sleeve preset ($10k paper)", options=["Auto", "Custom", "BTCUSD", "ETHUSDT", "BNBUSDT", "XAUUSD", "XAGUSD", "XCUUSD"])
+preset_in = input.string("Auto", "Sleeve preset ($10k paper)", options=["Auto", "Custom", "BTCUSD", "ETHUSDT", "BNBUSDT", "XAUUSD", "XAGUSD", "XCUUSD", "US500"])
 show_prior_high = input.bool(true, "Plot prior-high level")
 show_trade_bg = input.bool(true, "Shade bars in paper trade")
 mark_days = input.int(120, "Date labels within last N days", minval=14)
@@ -31,18 +32,19 @@ auto_preset() =>
      str.contains(ticker_u, "XAU") or str.contains(ticker_u, "GOLD") ? "XAUUSD" :
      str.contains(ticker_u, "XAG") or str.contains(ticker_u, "SILVER") ? "XAGUSD" :
      str.contains(ticker_u, "XCU") or str.contains(ticker_u, "COPPER") or str.contains(ticker_u, "HG") ? "XCUUSD" :
+     str.contains(ticker_u, "US500") or str.contains(ticker_u, "SPX") or str.contains(ticker_u, "SP500") ? "US500" :
      str.contains(ticker_u, "BTC") ? "BTCUSD" :
      "BTCUSD"
 
 preset = preset_in == "Auto" ? auto_preset() : preset_in
 
-lookback = preset == "Custom" ? lookback_c : preset == "ETHUSDT" ? 10 : (preset == "BTCUSD" or preset == "XCUUSD" or preset == "BNBUSDT" ? 15 : 30)
+lookback = preset == "Custom" ? lookback_c : preset == "ETHUSDT" ? 10 : preset == "US500" ? 20 : (preset == "BTCUSD" or preset == "XCUUSD" or preset == "BNBUSDT" ? 15 : 30)
 buffer_bps = preset == "Custom" ? buffer_c : preset == "ETHUSDT" ? 150.0 : (preset == "BTCUSD" or preset == "BNBUSDT" ? 125.0 : 100.0)
 max_breakout_bps = preset == "Custom" ? max_bb_c : 225.0
-hold_min = preset == "Custom" ? hold_c : preset == "ETHUSDT" ? 10 : preset == "BNBUSDT" ? 6 : preset == "XAUUSD" ? 9 : preset == "XAGUSD" ? 13 : preset == "XCUUSD" ? 4 : 5
-hold_max = preset == "Custom" ? hold_max_c : preset == "ETHUSDT" ? 13 : preset == "BNBUSDT" ? 10 : preset == "XAUUSD" ? 15 : preset == "XAGUSD" ? 15 : preset == "XCUUSD" ? 5 : 10
+hold_min = preset == "Custom" ? hold_c : preset == "ETHUSDT" ? 10 : preset == "BNBUSDT" ? 6 : preset == "US500" ? 10 : preset == "XAUUSD" ? 9 : preset == "XAGUSD" ? 13 : preset == "XCUUSD" ? 4 : 5
+hold_max = preset == "Custom" ? hold_max_c : preset == "ETHUSDT" ? 13 : preset == "BNBUSDT" ? 10 : preset == "US500" ? 18 : preset == "XAUUSD" ? 15 : preset == "XAGUSD" ? 15 : preset == "XCUUSD" ? 5 : 10
 dynamic_hold = hold_max > hold_min
-trend_mode = preset == "Custom" ? trend_c : preset == "XAUUSD" ? "sma200_95" : "bull_only"
+trend_mode = preset == "Custom" ? trend_c : (preset == "XAUUSD" or preset == "US500") ? "sma200_95" : "bull_only"
 data_note = preset == "ETHUSDT" or preset == "BNBUSDT" ? "Binance" : preset == "Custom" ? "custom" : "Dukascopy"
 
 fmt_d() =>

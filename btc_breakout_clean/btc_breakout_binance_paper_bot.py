@@ -47,8 +47,12 @@ BINANCE_BASE_URL_FALLBACKS = (
     "https://api.binance.com",
     "https://data-api.binance.vision",
 )
-LIVE_SYMBOLS = ("BTCUSD", "ETHUSDT", "BNBUSDT", "XAUUSD", "XAGUSD", "XCUUSD")
+LIVE_SYMBOLS = ("BTCUSD", "ETHUSDT", "BNBUSDT", "XAUUSD", "XAGUSD", "XCUUSD", "US500")
 LIVE_SLEEVE_EQUITY = 10_000.0
+
+# Future sleeves: sweep with add_sleeve_validation.py before appending to LIVE_SYMBOLS.
+CANDIDATE_SLEEVE_PARAMS: dict[str, dict[str, float | int | str | bool]] = {}
+
 LIVE_STRATEGY_PARAMS: dict[str, dict[str, float | int | str | bool]] = {
     "BTCUSD": {
         "source": "dukascopy",
@@ -134,6 +138,21 @@ LIVE_STRATEGY_PARAMS: dict[str, dict[str, float | int | str | bool]] = {
         "fee_bps": 10.0,
         "compound": True,
     },
+    # US500 — add_sleeve_validation best solo; book promotion gate failed, kept for diversification.
+    "US500": {
+        "source": "dukascopy",
+        "equity": LIVE_SLEEVE_EQUITY,
+        "lookback": 20,
+        "buffer_bps": 100.0,
+        "max_breakout_bps": 225.0,
+        "trend_mode": "sma200_95",
+        "hold_days": 10,
+        "hold_min": 10,
+        "hold_max": 18,
+        "dynamic_hold": True,
+        "fee_bps": 2.0,
+        "compound": True,
+    },
     # Aliases for manual single-symbol checks.
     "BTCUSDT": {"source": "binance", "lookback": 15, "buffer_bps": 125.0, "max_breakout_bps": 225.0, "hold_days": 5},
     "ETCUSDT": {"source": "binance", "lookback": 30, "buffer_bps": 100.0, "max_breakout_bps": 400.0, "hold_days": 5},
@@ -143,7 +162,12 @@ LIVE_PORTFOLIO_EQUITY = sum(float(LIVE_STRATEGY_PARAMS[s]["equity"]) for s in LI
 
 
 def live_symbol_params(symbol: str) -> dict[str, float | int | str | bool]:
-    return LIVE_STRATEGY_PARAMS.get(symbol.upper(), LIVE_STRATEGY_PARAMS["BTCUSD"])
+    key = symbol.upper()
+    if key in LIVE_STRATEGY_PARAMS:
+        return LIVE_STRATEGY_PARAMS[key]
+    if key in CANDIDATE_SLEEVE_PARAMS:
+        return CANDIDATE_SLEEVE_PARAMS[key]
+    return LIVE_STRATEGY_PARAMS["BTCUSD"]
 
 
 def live_symbol_source(symbol: str) -> str:
