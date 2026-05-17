@@ -47,12 +47,17 @@ BINANCE_BASE_URL_FALLBACKS = (
     "https://api.binance.com",
     "https://data-api.binance.vision",
 )
-LIVE_SYMBOLS = ("BTCUSD", "ETHUSDT", "BNBUSDT", "XAUUSD", "XAGUSD", "XCUUSD", "US500")
+LIVE_SYMBOLS = (
+    "BTCUSD",
+    "ETHUSDT",
+    "BNBUSDT",
+    "DOGEUSDT",
+    "XAUUSD",
+    "XAGUSD",
+    "XCUUSD",
+    "BRENT",
+)
 LIVE_SLEEVE_EQUITY = 10_000.0
-
-# Future sleeves: sweep with add_sleeve_validation.py before appending to LIVE_SYMBOLS.
-CANDIDATE_SLEEVE_PARAMS: dict[str, dict[str, float | int | str | bool]] = {}
-
 LIVE_STRATEGY_PARAMS: dict[str, dict[str, float | int | str | bool]] = {
     "BTCUSD": {
         "source": "dukascopy",
@@ -138,19 +143,32 @@ LIVE_STRATEGY_PARAMS: dict[str, dict[str, float | int | str | bool]] = {
         "fee_bps": 10.0,
         "compound": True,
     },
-    # US500 — add_sleeve_validation best solo; book promotion gate failed, kept for diversification.
-    "US500": {
-        "source": "dukascopy",
+    "DOGEUSDT": {
+        "source": "binance",
         "equity": LIVE_SLEEVE_EQUITY,
-        "lookback": 20,
-        "buffer_bps": 100.0,
+        "lookback": 30,
+        "buffer_bps": 75.0,
         "max_breakout_bps": 225.0,
         "trend_mode": "sma200_95",
-        "hold_days": 10,
-        "hold_min": 10,
-        "hold_max": 18,
+        "hold_days": 9,
+        "hold_min": 9,
+        "hold_max": 15,
         "dynamic_hold": True,
-        "fee_bps": 2.0,
+        "fee_bps": 10.0,
+        "compound": True,
+    },
+    "BRENT": {
+        "source": "dukascopy",
+        "equity": LIVE_SLEEVE_EQUITY,
+        "lookback": 30,
+        "buffer_bps": 75.0,
+        "max_breakout_bps": 225.0,
+        "trend_mode": "sma200_95",
+        "hold_days": 9,
+        "hold_min": 9,
+        "hold_max": 15,
+        "dynamic_hold": True,
+        "fee_bps": 5.0,
         "compound": True,
     },
     # Aliases for manual single-symbol checks.
@@ -162,12 +180,7 @@ LIVE_PORTFOLIO_EQUITY = sum(float(LIVE_STRATEGY_PARAMS[s]["equity"]) for s in LI
 
 
 def live_symbol_params(symbol: str) -> dict[str, float | int | str | bool]:
-    key = symbol.upper()
-    if key in LIVE_STRATEGY_PARAMS:
-        return LIVE_STRATEGY_PARAMS[key]
-    if key in CANDIDATE_SLEEVE_PARAMS:
-        return CANDIDATE_SLEEVE_PARAMS[key]
-    return LIVE_STRATEGY_PARAMS["BTCUSD"]
+    return LIVE_STRATEGY_PARAMS.get(symbol.upper(), LIVE_STRATEGY_PARAMS["BTCUSD"])
 
 
 def live_symbol_source(symbol: str) -> str:
