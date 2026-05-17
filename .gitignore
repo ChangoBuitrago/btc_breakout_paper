@@ -19,3 +19,6 @@ btc_breakout_clean/strategy_validation_results.json
 btc_breakout_clean/dynamic_hold_validation_results.json
 btc_breakout_clean/candidate_assets_screen_results.json
 btc_breakout_clean/candidate_assets_deep_screen_results.json
+btc_breakout_clean/add_sleeve_validation_results.json
+btc_breakout_clean/btc_breakout_clean/
+.streamlit/
