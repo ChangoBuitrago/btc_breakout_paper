@@ -6,7 +6,7 @@
 //   BNBUSDT Binance    lb15 buf125 cap225 hold6-10  bull_only
 //   XAUUSD  Dukascopy  lb30 buf100 cap225 hold9-15  sma200_95
 //   XAGUSD  Dukascopy  lb30 buf100 cap225 hold13-15 bull_only
-//   XCUUSD  Dukascopy  lb15 buf100 cap225 hold4-5   bull_only
+//   (XCUUSD removed from live book May 2026 — chart preset kept for research)
 //   DOGEUSDT Binance    lb30 buf75  cap225 hold9-15 sma200_95
 //   BRENT   Dukascopy  lb30 buf75  cap225 hold9-15 sma200_95
 // Telegram: header date = SIG (closed bar). IN = next session open. OUT = dynamic hold @ close.

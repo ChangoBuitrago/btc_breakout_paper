@@ -47,6 +47,7 @@ BINANCE_BASE_URL_FALLBACKS = (
     "https://api.binance.com",
     "https://data-api.binance.vision",
 )
+# Live book (May 2026): hypothesis_validation H1 drop XCU, H2 BTC half, H10 max 4 concurrent.
 LIVE_SYMBOLS = (
     "BTCUSD",
     "ETHUSDT",
@@ -54,14 +55,15 @@ LIVE_SYMBOLS = (
     "DOGEUSDT",
     "XAUUSD",
     "XAGUSD",
-    "XCUUSD",
     "BRENT",
 )
 LIVE_SLEEVE_EQUITY = 10_000.0
+BTC_SLEEVE_EQUITY = 5_000.0
+LIVE_MAX_CONCURRENT_ENTRIES = 4
 LIVE_STRATEGY_PARAMS: dict[str, dict[str, float | int | str | bool]] = {
     "BTCUSD": {
         "source": "dukascopy",
-        "equity": LIVE_SLEEVE_EQUITY,
+        "equity": BTC_SLEEVE_EQUITY,
         "lookback": 15,
         "buffer_bps": 125.0,
         "max_breakout_bps": 225.0,

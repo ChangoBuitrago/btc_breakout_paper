@@ -26,6 +26,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 from btc_breakout_binance_paper_bot import (  # noqa: E402
+    LIVE_MAX_CONCURRENT_ENTRIES,
     LIVE_SYMBOLS,
     LIVE_PORTFOLIO_EQUITY,
     LIVE_SLEEVE_EQUITY,
@@ -36,6 +37,7 @@ from btc_breakout_binance_paper_bot import (  # noqa: E402
     print_bot_report,
     write_state,
 )
+from strategy_validation import blocked_entries_max_concurrent  # noqa: E402
 from btc_breakout_paper_sim import (  # noqa: E402
     SimConfig,
     StrategyConfig,
@@ -424,15 +426,12 @@ def source_label(source: str) -> str:
     return source
 
 
-def run_symbol(args: argparse.Namespace, symbol: str, state_dir: Path, log_path: Path) -> dict[str, Any]:
-    symbol_dir = state_dir / symbol.upper()
-    state_path = symbol_dir / "state.json"
-    trades_path = symbol_dir / "trades.csv"
-    equity_path = symbol_dir / "equity.csv"
-
-    previous = load_previous_state(state_path)
-    if not previous and symbol.upper() == "BTCUSDT":
-        previous = load_previous_state(state_dir / "state.json")
+def _simulate_symbol(
+    args: argparse.Namespace,
+    symbol: str,
+    *,
+    blocked_entry_dates: frozenset[pd.Timestamp] | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, Any], StrategyConfig, float, str]:
     source = live_symbol_source(symbol)
     raw = fetch_symbol_daily(args, symbol, source)
     strat_cfg = live_strategy_config(symbol)
@@ -454,10 +453,53 @@ def run_symbol(args: argparse.Namespace, symbol: str, state_dir: Path, log_path:
         out_dir=Path("."),
         instrument=symbol.upper(),
         skip_saturday_entry=default_skip_saturday_entry(source),
+        blocked_entry_dates=blocked_entry_dates or frozenset(),
     )
-
     df = add_indicators(raw, strat_cfg)
     trades, curve, summary = simulate_account(df, sim_cfg=sim_cfg, strat_cfg=strat_cfg)
+    return df, trades, curve, summary, strat_cfg, equity, source
+
+
+def portfolio_blocked_entry_dates(
+    args: argparse.Namespace,
+    symbols: list[str],
+    max_concurrent: int,
+) -> dict[str, frozenset[pd.Timestamp]]:
+    """Pass 1 replay → concurrent-entry cap → blocked entry dates per sleeve (H10)."""
+    parts: list[pd.DataFrame] = []
+    for symbol in symbols:
+        _, trades, _, _, _, _, _ = _simulate_symbol(args, symbol)
+        if not trades.empty:
+            t = trades.copy()
+            t["sleeve"] = symbol.upper()
+            parts.append(t)
+    if not parts or max_concurrent <= 0:
+        return {s.upper(): frozenset() for s in symbols}
+    all_trades = pd.concat(parts, ignore_index=True)
+    return blocked_entries_max_concurrent(all_trades, max_concurrent)
+
+
+def run_symbol(
+    args: argparse.Namespace,
+    symbol: str,
+    state_dir: Path,
+    log_path: Path,
+    *,
+    blocked_entry_dates: frozenset[pd.Timestamp] | None = None,
+) -> dict[str, Any]:
+    symbol_dir = state_dir / symbol.upper()
+    state_path = symbol_dir / "state.json"
+    trades_path = symbol_dir / "trades.csv"
+    equity_path = symbol_dir / "equity.csv"
+
+    previous = load_previous_state(state_path)
+    if not previous and symbol.upper() == "BTCUSDT":
+        previous = load_previous_state(state_dir / "state.json")
+    df, trades, curve, summary, strat_cfg, equity, source = _simulate_symbol(
+        args,
+        symbol,
+        blocked_entry_dates=blocked_entry_dates,
+    )
     latest = latest_signal_report(df, strat_cfg)
     open_position = summarize_open_position(curve, df, strat_cfg)
     pending_entry = summarize_pending_entry(curve, open_position=open_position)
@@ -504,14 +546,32 @@ def main() -> None:
     symbols = parse_symbols(args)
     state_dir = Path(args.state_dir)
     log_path = state_dir / "run_log.csv"
-    results = [run_symbol(args, symbol, state_dir, log_path) for symbol in symbols]
+
+    blocked_by_sym: dict[str, frozenset[pd.Timestamp]] = {s.upper(): frozenset() for s in symbols}
+    if LIVE_MAX_CONCURRENT_ENTRIES > 0 and len(symbols) > 1:
+        blocked_by_sym = portfolio_blocked_entry_dates(args, symbols, LIVE_MAX_CONCURRENT_ENTRIES)
+        n_blocked = sum(len(v) for v in blocked_by_sym.values())
+        if n_blocked:
+            print(f"  Max {LIVE_MAX_CONCURRENT_ENTRIES} concurrent entries: {n_blocked} blocked signal day(s)")
+
+    results = [
+        run_symbol(
+            args,
+            symbol,
+            state_dir,
+            log_path,
+            blocked_entry_dates=blocked_by_sym.get(symbol.upper(), frozenset()),
+        )
+        for symbol in symbols
+    ]
 
     print("=" * 92)
     print("  DAILY PORTFOLIO SUMMARY")
     print("=" * 92)
     total_equity = sum(float(result["summary"]["final_equity"]) for result in results)
     total_year_pnl = sum(float(result["year_summary"]["pnl"]) for result in results)
-    print(f"  Configured: {len(LIVE_SYMBOLS)} sleeves × ${fmt(LIVE_SLEEVE_EQUITY)} = ${fmt(LIVE_PORTFOLIO_EQUITY)}")
+    alloc_line = ", ".join(f"{s} ${live_symbol_equity(s, args.equity):,.0f}" for s in LIVE_SYMBOLS)
+    print(f"  Configured: {len(LIVE_SYMBOLS)} sleeves = ${fmt(LIVE_PORTFOLIO_EQUITY)} ({alloc_line})")
     print(f"  Current fake equity:        ${fmt(total_equity)}")
     print(f"  Current-year fake PnL:      ${fmt(total_year_pnl)}")
     print("-" * 92)
