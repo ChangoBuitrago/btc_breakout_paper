@@ -36,8 +36,13 @@ python -m pip install -q -r requirements-dashboard.txt
 DASHBOARD_PORT=8501
 if lsof -ti:"${DASHBOARD_PORT}" >/dev/null 2>&1; then
   echo "Stopping existing process on port ${DASHBOARD_PORT}..." >&2
-  lsof -ti:"${DASHBOARD_PORT}" | xargs kill -9 2>/dev/null || true
-  sleep 1
+  # TERM first (graceful); -9 only if still bound (avoids killing your own shell mid-exec)
+  lsof -ti:"${DASHBOARD_PORT}" | xargs kill -15 2>/dev/null || true
+  sleep 2
+  if lsof -ti:"${DASHBOARD_PORT}" >/dev/null 2>&1; then
+    lsof -ti:"${DASHBOARD_PORT}" | xargs kill -9 2>/dev/null || true
+    sleep 1
+  fi
 fi
 
 exec python -m streamlit run paper_dashboard.py --server.port "${DASHBOARD_PORT}" "$@"
