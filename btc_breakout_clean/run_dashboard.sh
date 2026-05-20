@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
-# Run the paper portfolio dashboard (needs Python >= 3.10 for dukascopy-python).
+# Run daily paper bot (updates state.json + latest signals), then Streamlit dashboard.
+# Needs Python >= 3.10 for dukascopy-python.
+#
+# Options (passed before any streamlit args):
+#   --skip-daily       Skip run_binance_paper_daily.py (dashboard only)
+#   --refresh-cache    Re-download Dukascopy H1 caches (slow)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 HERE="$ROOT/btc_breakout_clean"
@@ -33,6 +38,39 @@ source "$VENV/bin/activate"
 python -m pip install -q --upgrade pip
 python -m pip install -q -r requirements-dashboard.txt
 
+SKIP_DAILY=0
+REFRESH_CACHE=0
+STREAMLIT_ARGS=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --skip-daily)
+      SKIP_DAILY=1
+      shift
+      ;;
+    --refresh-cache)
+      REFRESH_CACHE=1
+      shift
+      ;;
+    *)
+      STREAMLIT_ARGS+=("$1")
+      shift
+      ;;
+  esac
+done
+
+if [ "$SKIP_DAILY" -eq 0 ]; then
+  echo "Running daily paper bot (updates paper_portfolio/)…" >&2
+  DAILY_CMD=(python run_binance_paper_daily.py --state-dir paper_portfolio --no-telegram --quiet)
+  if [ "$REFRESH_CACHE" -eq 1 ]; then
+    DAILY_CMD+=(--refresh-cache)
+  fi
+  if ! "${DAILY_CMD[@]}"; then
+    echo "Warning: daily paper bot failed; starting dashboard with last saved state." >&2
+  fi
+else
+  echo "Skipping daily paper bot (--skip-daily)." >&2
+fi
+
 DASHBOARD_PORT=8501
 if lsof -ti:"${DASHBOARD_PORT}" >/dev/null 2>&1; then
   echo "Stopping existing process on port ${DASHBOARD_PORT}..." >&2
@@ -45,4 +83,8 @@ if lsof -ti:"${DASHBOARD_PORT}" >/dev/null 2>&1; then
   fi
 fi
 
-exec python -m streamlit run paper_dashboard.py --server.port "${DASHBOARD_PORT}" "$@"
+if [ "${#STREAMLIT_ARGS[@]}" -gt 0 ]; then
+  exec python -m streamlit run paper_dashboard.py --server.port "${DASHBOARD_PORT}" "${STREAMLIT_ARGS[@]}"
+else
+  exec python -m streamlit run paper_dashboard.py --server.port "${DASHBOARD_PORT}"
+fi

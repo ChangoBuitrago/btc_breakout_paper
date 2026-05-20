@@ -400,6 +400,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--telegram-token", default=os.getenv("TELEGRAM_BOT_TOKEN"))
     p.add_argument("--telegram-chat-id", default=os.getenv("TELEGRAM_CHAT_ID"))
     p.add_argument("--no-telegram", action="store_true", help="Disable Telegram notification even if configured")
+    p.add_argument("--quiet", action="store_true", help="Suppress per-symbol reports (portfolio summary only)")
     return p.parse_args()
 
 
