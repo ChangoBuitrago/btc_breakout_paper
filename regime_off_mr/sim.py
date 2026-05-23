@@ -36,8 +36,8 @@ def simulate(df: pd.DataFrame, params: SleeveParams, *, equity: float = INITIAL_
     entry_notional = 0.0
     qty = 0.0
     size_frac = 0.0
-    equity_before_entry = equity
     pending_signal_i: int | None = None
+    last_exit_i = -10_000
 
     for i in range(1, len(frame)):
         bar_date = frame.index[i]
@@ -47,8 +47,9 @@ def simulate(df: pd.DataFrame, params: SleeveParams, *, equity: float = INITIAL_
         todays_signal_i = i - 1
         todays_signal = bool(frame["signal"].iloc[todays_signal_i])
         entry_day = bar_date.normalize()
+        cooldown_ok = (i - last_exit_i) > params.cooldown_days
 
-        if not in_pos and todays_signal:
+        if not in_pos and todays_signal and cooldown_ok:
             pending_signal_i = todays_signal_i
 
         if not in_pos and pending_signal_i is not None:
@@ -62,7 +63,6 @@ def simulate(df: pd.DataFrame, params: SleeveParams, *, equity: float = INITIAL_
                 )
                 if sf > 0.0:
                     entry_px = float(frame["open"].iloc[i])
-                    equity_before_entry = equity
                     entry_notional = equity * sf
                     qty = entry_notional / entry_px
                     entry_fee = entry_notional * fee
@@ -77,14 +77,26 @@ def simulate(df: pd.DataFrame, params: SleeveParams, *, equity: float = INITIAL_
 
         if in_pos:
             hold_bars = i - entry_i + 1
-            if hold_bars >= params.hold_days:
-                exit_px = float(frame["close"].iloc[i])
+            exit_px = float(frame["close"].iloc[i])
+            exit_reason = ""
+
+            if params.exit_at_regime_on and bool(frame["regime_on"].iloc[i]):
+                exit_reason = "regime_on"
+            elif params.exit_at_sma50 and float(frame["close"].iloc[i]) >= float(frame["sma50"].iloc[i]):
+                exit_reason = "sma50"
+            elif hold_bars >= params.hold_max:
+                exit_reason = "max_hold"
+            elif hold_bars >= params.hold_days:
+                exit_reason = "min_hold"
+
+            if exit_reason:
                 exit_notional = qty * exit_px
                 exit_fee = exit_notional * fee
                 entry_fee = entry_notional * fee
                 gross = exit_notional - entry_notional
                 net = gross - entry_fee - exit_fee
                 equity += gross - exit_fee
+                last_exit_i = i
 
                 trades.append(
                     {
@@ -92,13 +104,9 @@ def simulate(df: pd.DataFrame, params: SleeveParams, *, equity: float = INITIAL_
                         "entry_date": frame.index[entry_i].isoformat(),
                         "exit_date": bar_date.isoformat(),
                         "hold_days": hold_bars,
+                        "exit_reason": exit_reason,
                         "mechanism": params.mechanism,
-                        "stretch_bps": float(frame["stretch_bps"].iloc[signal_i_at_entry])
-                        if params.mechanism == "M1_stretch_mr"
-                        else None,
-                        "breakout_bps": float(frame["breakout_bps"].iloc[signal_i_at_entry])
-                        if params.mechanism == "M0_bear_breakout"
-                        else None,
+                        "stretch_bps": float(frame["stretch_bps"].iloc[signal_i_at_entry]),
                         "entry_px": entry_px,
                         "exit_px": exit_px,
                         "net_pnl": net,
@@ -126,8 +134,9 @@ def simulate(df: pd.DataFrame, params: SleeveParams, *, equity: float = INITIAL_
                 "entry_date": frame.index[entry_i].isoformat(),
                 "exit_date": frame.index[last_i].isoformat(),
                 "hold_days": hold_bars,
-                "mechanism": params.mechanism,
                 "exit_reason": "force_exit",
+                "mechanism": params.mechanism,
+                "stretch_bps": float(frame["stretch_bps"].iloc[signal_i_at_entry]),
                 "entry_px": entry_px,
                 "exit_px": exit_px,
                 "net_pnl": net,
@@ -158,4 +167,6 @@ def simulate(df: pd.DataFrame, params: SleeveParams, *, equity: float = INITIAL_
         "profit_factor": float(profit_factor(pnls)) if len(pnls) else float("nan"),
         "win_rate_pct": 100.0 * float((pnls > 0).mean()) if len(pnls) else float("nan"),
     }
+    if not trades_df.empty and "exit_reason" in trades_df.columns:
+        summary["exit_mix"] = trades_df["exit_reason"].value_counts().to_dict()
     return trades_df, summary

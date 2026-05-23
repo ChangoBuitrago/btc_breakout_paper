@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from regime_off_mr.config import (
     MAX_DD_PCT,
+    MAX_EX_PF_IF_FEW_TRADES,
     MAX_TOP_TRADE_PNL_SHARE,
+    MAX_TRADES_FULL,
     MIN_PF_EX_2024,
     MIN_PF_FULL,
     MIN_TRADES_EX_2024,
@@ -49,15 +52,20 @@ def top_trade_share(trades: pd.DataFrame) -> float:
 def passes_discovery(full: dict[str, Any], ex: dict[str, Any], trades: pd.DataFrame) -> bool:
     pf = float(full.get("profit_factor") or 0)
     pf_ex = float(ex.get("profit_factor") or 0)
-    if pf < MIN_PF_FULL or pf_ex < MIN_PF_EX_2024:
+    n_full = int(full.get("trades") or 0)
+    n_ex = int(ex.get("trades") or 0)
+
+    if not np.isfinite(pf) or pf < MIN_PF_FULL:
         return False
-    if int(full.get("trades") or 0) < MIN_TRADES_FULL:
+    if n_ex < MIN_TRADES_EX_2024 or not np.isfinite(pf_ex) or pf_ex < MIN_PF_EX_2024:
         return False
-    if int(ex.get("trades") or 0) < MIN_TRADES_EX_2024:
+    if n_full < MIN_TRADES_FULL or n_full > MAX_TRADES_FULL:
         return False
     if float(full.get("max_drawdown_pct") or 0) < MAX_DD_PCT:
         return False
     if top_trade_share(trades) > MAX_TOP_TRADE_PNL_SHARE:
+        return False
+    if n_ex < 8 and pf_ex > MAX_EX_PF_IF_FEW_TRADES:
         return False
     return True
 

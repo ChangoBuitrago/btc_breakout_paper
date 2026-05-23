@@ -1,34 +1,36 @@
-# Regime-off research (Algo 2)
+# Regime-off research (Algo 2) — v2
 
-Standalone package — **does not modify** `btc_breakout_clean` breakout logic or live config.
+Standalone package. Does **not** modify `btc_breakout_clean`.
 
-## Goal
+## v2 improvements (regime-off fit)
 
-Find edge when **regime is off** (`close` below SMA200 or 0.95×SMA200), via solo backtests on metals/oil only.
+- **Stretch band** (min–max bps below floor) — avoid weak tags and crash chasing
+- **Regime-off maturity** — require N consecutive days below floor
+- **Bounce filter** — green day before entry (stabilization)
+- **5d return floor** — skip free-fall entries
+- **M3** — stretch + bounce + still below SMA50
+- **Exits** — regime-on (back above floor), SMA50 touch, or min/max hold
+- **Cooldown** after exit — fewer overlapping trades
+- **Stricter gates** — cap trade count, sanity-check inflated ex-2024 PF
 
 ## Mechanisms
 
-| ID | Description |
-|----|-------------|
-| M0 | Breakout only when regime off (sanity / inverse regime) |
-| M1 | Stretch MR: enter when stretched below regime floor |
-| M2 | Prior-low tag: enter near N-day low while regime off |
+| ID | Role |
+|----|------|
+| M3 | Primary: stretch bounce below SMA50 |
+| M1 | Stretch MR (no SMA50 cap) |
+| M2 | Prior-low tag + bounce |
+
+M0 (bear breakout) removed — failed sanity checks.
 
 ## Run
-
-Requires existing Dukascopy H1 cache (from breakout daily run):
 
 ```bash
 python3 regime_off_mr/validation.py
 ```
 
-Output: `regime_off_mr/validation_results.json` (gitignored).
+Requires `btc_breakout_clean/cache/*_dukascopy_h1.csv`.
 
-## Discovery gates (solo)
+## Gates
 
-- PF ≥ 1.15 full, ≥ 1.0 ex-2024
-- ≥ 15 trades full, ≥ 3 ex-2024
-- Max DD ≥ −15%
-- Top trade &lt; 50% of total PnL
-
-No combined book, no paper bot, no changes to breakout sleeves until a row passes on ≥ 2 symbols.
+PF ≥ 1.15 full, ≥ 1.05 ex-2024 · 12–55 trades · DD ≥ −15% · ex-PF ≤ 8 if &lt; 8 ex trades
