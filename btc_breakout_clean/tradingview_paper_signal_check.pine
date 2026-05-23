@@ -10,6 +10,7 @@
 //   DOGEUSDT Binance    lb30 buf75  cap225 hold9-15 sma200_95
 //   BRENT   Dukascopy  lb30 buf75  cap225 hold9-15 sma200_95
 // Telegram: header date = SIG (closed bar). IN = next session open. OUT = dynamic hold @ close.
+// Matches Python paper sim including force_exit on the last historical bar when still long.
 indicator("Paper breakout check", shorttitle="PaperSig", overlay=true, max_labels_count=500)
 
 preset_in = input.string("Auto", "Sleeve preset ($10k paper)", options=["Auto", "Custom", "BTCUSD", "ETHUSDT", "BNBUSDT", "DOGEUSDT", "XAUUSD", "XAGUSD", "XCUUSD", "BRENT"])
@@ -17,6 +18,7 @@ show_prior_high = input.bool(true, "Plot prior-high level")
 show_trade_bg = input.bool(true, "Shade bars in paper trade")
 mark_days = input.int(120, "Date labels within last N days", minval=14)
 skip_sat_entry = input.bool(true, "Skip Saturday entry (Dukascopy daily)")
+force_exit_end = input.bool(true, "Force exit at last historical bar (Python sim parity)")
 
 lookback_c = input.int(15, "Lookback (Custom)", minval=1)
 buffer_c = input.float(100.0, "Buffer bps (Custom)", step=1)
@@ -100,6 +102,7 @@ if signal and not in_pos
 today_can_enter = not skip_sat_entry or dayofweek(time) != dayofweek.saturday
 entered = entry_armed and not in_pos and today_can_enter
 exited = false
+force_out = false
 
 if entered
     in_pos := true
@@ -113,7 +116,8 @@ else if in_pos
     peak_close := math.max(peak_close, close)
     fade_out = dynamic_hold and hold_count >= hold_min and momentum_faded()
     max_out = dynamic_hold ? hold_count >= hold_max : hold_count >= hold_min
-    if max_out or fade_out
+    force_out := force_exit_end and barstate.islastconfirmedhistory
+    if max_out or fade_out or force_out
         in_pos := false
         exited := true
         hold_count := 0
@@ -134,14 +138,17 @@ plot(show_prior_high ? prior_high : na, "Prior high", color=color.new(color.oran
 plotshape(new_signal_mark and in_label_window, title="Signal (close)", style=shape.circle, location=location.belowbar, size=size.tiny, color=color.new(color.gray, 0), text="SIG")
 plotshape(pending_mark and in_label_window, title="Armed (next open)", style=shape.diamond, location=location.belowbar, size=size.tiny, color=color.new(color.yellow, 0), text="ARM")
 plotshape(entered and in_label_window, title="Entry (open)", style=shape.triangleup, location=location.belowbar, size=size.small, color=color.new(color.teal, 0), text="IN")
-plotshape(exited and in_label_window, title="Exit (close)", style=shape.triangledown, location=location.abovebar, size=size.small, color=color.new(color.red, 0), text="OUT")
+plotshape(exited and not force_out and in_label_window, title="Exit (close)", style=shape.triangledown, location=location.abovebar, size=size.small, color=color.new(color.red, 0), text="OUT")
+plotshape(exited and force_out and in_label_window, title="Exit (sim end)", style=shape.triangledown, location=location.abovebar, size=size.small, color=color.new(color.orange, 0), text="OUT*")
 
 if new_signal_mark and in_label_window
     label.new(bar_index, low, "SIG " + fmt_d(), style=label.style_label_up, color=color.new(color.gray, 30), textcolor=color.white, size=size.tiny)
 if entered and in_label_window
     label.new(bar_index, low, "IN " + fmt_d(), style=label.style_label_up, color=color.new(color.teal, 20), textcolor=color.white, size=size.small)
-if exited and in_label_window
+if exited and not force_out and in_label_window
     label.new(bar_index, high, "OUT " + fmt_d(), style=label.style_label_down, color=color.new(color.red, 20), textcolor=color.white, size=size.small)
+if exited and force_out and in_label_window
+    label.new(bar_index, high, "OUT* " + fmt_d(), style=label.style_label_down, color=color.new(color.orange, 20), textcolor=color.white, size=size.small)
 
 var label status = na
 if barstate.islast
@@ -155,5 +162,6 @@ if barstate.islast
     hold_detail = dynamic_hold ? "hold" + str.tostring(hold_min) + "-" + str.tostring(hold_max) + " dyn" : "hold" + str.tostring(hold_min)
     detail = preset + auto_note + " $10k | " + data_note + " | lb" + str.tostring(lookback) + " buf" + str.tostring(buffer_bps, "#") + " " + hold_detail + " " + trend_mode
     detail += "\nbar " + fmt_d() + " | SIG date = Telegram closed bar"
+    detail += "\nOUT* = force_exit at last hist bar (Python sim)"
     detail += "\nTV OHLC may differ from Dukascopy/Binance bot feed"
     status := label.new(bar_index, high, status_txt + "\n" + detail, style=label.style_label_lower_left, color=color.new(color.black, 15), textcolor=color.white, size=size.small)

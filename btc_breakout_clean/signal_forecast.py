@@ -3,27 +3,55 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
 from btc_breakout_binance_paper_bot import fetch_binance_daily, live_symbol_source
-from btc_breakout_paper_sim import StrategyConfig, add_indicators, dukascopy_cache_path, fetch_dukascopy_instrument
+from btc_breakout_paper_sim import (
+    StrategyConfig,
+    add_indicators,
+    dukascopy_cache_path,
+    fetch_dukascopy_instrument,
+    normalize_ohlc,
+)
+
+HERE = Path(__file__).resolve().parent
 
 
-def load_daily_bars(symbol: str, start: str = "2018-01-01") -> pd.DataFrame:
+def binance_cache_path(symbol: str) -> Path:
+    return HERE / "cache" / f"{symbol.upper()}_binance_1d.csv"
+
+
+def load_daily_bars(symbol: str, start: str = "2018-01-01", *, refresh_cache: bool = False) -> pd.DataFrame:
     sym = symbol.upper()
     source = live_symbol_source(sym)
+    start_ts = pd.Timestamp(start, tz="UTC").normalize()
     if source == "binance":
-        return fetch_binance_daily(sym, start, None)
+        path = binance_cache_path(sym)
+        cached = pd.DataFrame()
+        if path.exists():
+            cached = normalize_ohlc(pd.read_csv(path, index_col=0, parse_dates=True))
+        if not refresh_cache and not cached.empty:
+            return cached.loc[cached.index >= start_ts]
+        try:
+            df = fetch_binance_daily(sym, start, None)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            df.to_csv(path)
+            return df
+        except Exception:
+            if cached.empty:
+                raise
+            return cached.loc[cached.index >= start_ts]
     return fetch_dukascopy_instrument(
         sym,
         dukascopy_cache_path(sym),
         start,
         None,
         include_current=False,
-        refresh_cache=False,
+        refresh_cache=refresh_cache,
     )
 
 
@@ -105,6 +133,16 @@ def flat_signal_horizon_stats(
         "prob_7d": float((arr <= 7).mean()),
         "prob_14d": float((arr <= 14).mean()),
     }
+
+
+def _analogue_gap_bps(gap: float | None, buffer_bps: float) -> tuple[float, float]:
+    """Match near-breakout history when price is far below prior highs."""
+    if gap is None:
+        return 50.0, 40.0
+    near_cap = buffer_bps + 50.0
+    if gap > buffer_bps * 2:
+        return near_cap, max(40.0, buffer_bps * 0.6)
+    return gap, max(40.0, min(80.0, gap * 0.35))
 
 
 def median_inter_entry_gap_days(trades: pd.DataFrame) -> float | None:
@@ -314,7 +352,11 @@ def forecast_entry(
             **_base(),
         }
 
-    horizon = flat_signal_horizon_stats(df, strat_cfg, gap_bps=gap if gap is not None else 50.0)
+    match_gap, match_band = _analogue_gap_bps(gap, buffer_bps)
+    far_from_breakout = gap is not None and gap > buffer_bps * 2
+    horizon = flat_signal_horizon_stats(
+        df, strat_cfg, gap_bps=match_gap, band_bps=match_band,
+    )
 
     parts: list[str] = []
     if gap is not None and gap > 0:
@@ -322,9 +364,12 @@ def forecast_entry(
     if horizon["median_days"] is not None:
         p7 = horizon["prob_7d"]
         p7s = f"{100*p7:.0f}%" if p7 is not None else "—"
-        parts.append(f"~{horizon['median_days']}d med ({p7s} in 7d, n={horizon['n']})")
+        tag = "once near breakout" if far_from_breakout else "med"
+        parts.append(f"~{horizon['median_days']}d {tag} ({p7s} in 7d, n={horizon['n']})")
     elif med_gap is not None:
         parts.append(f"~{med_gap:.0f}d between entries (hist)")
+    elif far_from_breakout:
+        parts.append("far below highs — timing from near-breakout analogues")
     if since_exit is not None and med_gap is not None:
         parts.append(f"{since_exit}d since exit")
 
@@ -340,6 +385,7 @@ def forecast_entry(
         **{k: v for k, v in q.items() if k not in {"target_breakout_bps"}},
         "setup_bps": target,
         "horizon_n": horizon.get("n"),
+        "far_from_breakout": far_from_breakout,
         **_base(),
     }
 

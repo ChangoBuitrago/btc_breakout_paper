@@ -334,7 +334,9 @@ def last_trade_2026(trades: pd.DataFrame) -> str:
     d = str(row["exit_date"])[:10]
     pnl = float(row["net_pnl"])
     sign = "+" if pnl >= 0 else ""
-    return f"{d} {sign}${pnl:,.0f}"
+    reason = str(row.get("exit_reason", "") or "")
+    suffix = " (sim end)" if reason == "force_exit" else ""
+    return f"{d}{suffix} {sign}${pnl:,.0f}"
 
 
 def trades_2026_count(trades: pd.DataFrame) -> int:
@@ -790,7 +792,8 @@ def main() -> None:
                 """
                 <div class="forecast-legend">
                 <b>How to read this</b> — not a price prediction.<br>
-                <b>Gap</b>: bps to signal · <b>Med days</b>: typical wait from similar setups ·
+                <b>Gap</b>: bps to signal · <b>Med days</b>: wait from near-breakout analogues
+                (when far below highs, not from today’s deep gap) ·
                 <b>P(7d/14d)</b>: historical hit rate · <b>Quality</b>: similar past trades vs sleeve avg.
                 </div>
                 """,
@@ -901,9 +904,10 @@ def main() -> None:
             t["exit_date"] = pd.to_datetime(t["exit_date"], utc=True)
             t = t[t["exit_date"] >= VIEW_START].sort_values("exit_date", ascending=False)
             if not t.empty:
-                p = t[
-                    ["entry_date", "exit_date", "hold_days", "net_pnl", "open_to_exit_pct", "size_frac"]
-                ].copy()
+                cols = ["entry_date", "exit_date", "hold_days", "net_pnl", "open_to_exit_pct", "size_frac"]
+                if "exit_reason" in t.columns:
+                    cols.insert(3, "exit_reason")
+                p = t[cols].copy()
                 p.insert(0, "asset", short_sym(r["symbol"]))
                 parts.append(p)
         if parts:

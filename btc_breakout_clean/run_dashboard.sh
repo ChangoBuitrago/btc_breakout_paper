@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
-# Run daily paper bot (updates state.json + latest signals), then Streamlit dashboard.
-# Needs Python >= 3.10 for dukascopy-python.
+# Streamlit paper portfolio dashboard (Python >= 3.10).
 #
-# Options (passed before any streamlit args):
-#   --skip-daily       Skip run_binance_paper_daily.py (dashboard only)
-#   --refresh-cache    Re-download Dukascopy H1 caches (slow)
+# First-time setup (once):
+#   python3.12 -m venv btc_breakout_clean/.venv-dashboard
+#   source btc_breakout_clean/.venv-dashboard/bin/activate
+#   pip install -r btc_breakout_clean/requirements-dashboard.txt
+#
+# Options (before any streamlit args):
+#   --daily            Run run_binance_paper_daily.py before dashboard
+#   --telegram         With --daily: send Telegram (needs TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID)
+#   --refresh-cache    With --daily: re-download Dukascopy H1 caches (slow)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 HERE="$ROOT/btc_breakout_clean"
@@ -30,21 +35,29 @@ if [ -z "$PY" ]; then
 fi
 
 if [ ! -d "$VENV" ]; then
-  echo "Creating venv at btc_breakout_clean/.venv-dashboard with $PY"
-  "$PY" -m venv "$VENV"
+  echo "No venv at btc_breakout_clean/.venv-dashboard" >&2
+  echo "Create it: $PY -m venv $VENV && source $VENV/bin/activate && pip install -r requirements-dashboard.txt" >&2
+  exit 1
 fi
 # shellcheck source=/dev/null
 source "$VENV/bin/activate"
-python -m pip install -q --upgrade pip
-python -m pip install -q -r requirements-dashboard.txt
+if ! python -c "import streamlit, pandas, altair" 2>/dev/null; then
+  echo "Missing dashboard deps. Run: pip install -r requirements-dashboard.txt" >&2
+  exit 1
+fi
 
-SKIP_DAILY=0
+RUN_DAILY=0
+SEND_TELEGRAM=0
 REFRESH_CACHE=0
 STREAMLIT_ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
-    --skip-daily)
-      SKIP_DAILY=1
+    --daily)
+      RUN_DAILY=1
+      shift
+      ;;
+    --telegram)
+      SEND_TELEGRAM=1
       shift
       ;;
     --refresh-cache)
@@ -58,17 +71,18 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-if [ "$SKIP_DAILY" -eq 0 ]; then
+if [ "$RUN_DAILY" -eq 1 ]; then
   echo "Running daily paper bot (updates paper_portfolio/)…" >&2
-  DAILY_CMD=(python run_binance_paper_daily.py --state-dir paper_portfolio --no-telegram --quiet)
+  DAILY_CMD=(python run_binance_paper_daily.py --state-dir paper_portfolio --quiet)
+  if [ "$SEND_TELEGRAM" -eq 0 ]; then
+    DAILY_CMD+=(--no-telegram)
+  fi
   if [ "$REFRESH_CACHE" -eq 1 ]; then
     DAILY_CMD+=(--refresh-cache)
   fi
   if ! "${DAILY_CMD[@]}"; then
     echo "Warning: daily paper bot failed; starting dashboard with last saved state." >&2
   fi
-else
-  echo "Skipping daily paper bot (--skip-daily)." >&2
 fi
 
 DASHBOARD_PORT=8501
