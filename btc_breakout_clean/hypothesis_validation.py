@@ -120,6 +120,8 @@ def h4_crypto_cap_175(raw: dict[str, pd.DataFrame], baseline_m: dict[str, float]
 
 
 def h5_xcu_shorter_hold(raw: dict[str, pd.DataFrame], baseline_m: dict[str, float]) -> dict[str, Any]:
+    if "XCUUSD" not in LIVE_SYMBOLS:
+        return {"H5_xcu_hold_3d_fixed": {"skipped": True, "reason": "XCUUSD not in LIVE_SYMBOLS"}}
     live = tuple(LIVE_SYMBOLS)
     strats = {s: live_strategy_config(s) for s in live}
     strats["XCUUSD"] = replace(

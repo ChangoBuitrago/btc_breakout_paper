@@ -364,7 +364,7 @@ def main() -> None:
 
     OUT_PATH.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
 
-    print("\n=== BASELINE PORTFOLIO (6 sleeves, Saturday skip on Dukascopy) ===")
+    print(f"\n=== BASELINE PORTFOLIO ({len(symbols)} sleeves, Saturday skip on Dukascopy) ===")
     print(
         f"  return={baseline['return_pct']:.2f}%  maxDD={baseline['max_drawdown_pct']:.2f}%  "
         f"PF={baseline['profit_factor']:.3f}  trades={baseline['trades']}"

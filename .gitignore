@@ -22,6 +22,8 @@ btc_breakout_clean/candidate_assets_deep_screen_results.json
 btc_breakout_clean/add_sleeve_validation_results.json
 btc_breakout_clean/*_sleeve_report.json
 btc_breakout_clean/hypothesis_validation_results.json
-regime_off_mr/validation_results.json
+btc_breakout_clean/edge_polish_results.json
+btc_breakout_clean/candidate_backtest_results.json
+btc_breakout_clean/btc_risk_grid_results.json
 btc_breakout_clean/btc_breakout_clean/
 .streamlit/

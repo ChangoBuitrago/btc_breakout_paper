@@ -56,26 +56,79 @@ BINANCE_CANDIDATES: dict[str, str] = {
     "ADAUSDT": "crypto_alt",
     "AVAXUSDT": "crypto_alt",
     "XRPUSDT": "crypto_alt",
-    "DOGEUSDT": "crypto_alt",
     "ATOMUSDT": "crypto_alt",
+    "LTCUSDT": "crypto_alt",
+    "BCHUSDT": "crypto_alt",
+    "NEARUSDT": "crypto_alt",
+    "DOTUSDT": "crypto_alt",
+    "MATICUSDT": "crypto_alt",
+    "APTUSDT": "crypto_alt",
+    "ARBUSDT": "crypto_alt",
+    "OPUSDT": "crypto_alt",
 }
 
-# Dukascopy (exclude live sleeves and aliases)
-DUKA_CLASS = {
+# Dukascopy candidates (exclude live sleeves in build_universe)
+DUKA_CLASS: dict[str, str] = {
+    # Americas indices
     "US500": "equity_index",
     "NAS100": "equity_index",
     "US2000": "equity_index",
+    "USSC2000": "equity_index",
+    "DJIA": "equity_index",
+    "DOLLAR": "dollar_index",
+    # Europe / Asia indices
+    "DAX": "equity_index",
+    "UK100": "equity_index",
+    "CAC40": "equity_index",
+    "N225": "equity_index",
+    "HK50": "equity_index",
+    "CHINA50": "equity_index",
+    # Energy
     "BRENT": "energy",
     "CL": "energy",
+    "DIESEL": "energy",
+    "GAS": "energy",
+    # Metals
+    "XPTUSD": "precious_metal",
+    "XPDUSD": "precious_metal",
+    # Agriculture
+    "COFFEE": "agricultural",
+    "SUGAR": "agricultural",
+    "COCOA": "agricultural",
+    "SOYBEAN": "agricultural",
+    "COTTON": "agricultural",
+    # FX majors + JPY crosses
+    "EURUSD": "fx_major",
+    "GBPUSD": "fx_major",
+    "AUDUSD": "fx_major",
+    "NZDUSD": "fx_major",
+    "USDCAD": "fx_major",
+    "USDCHF": "fx_major",
     "USDJPY": "fx",
     "EURJPY": "fx",
     "GBPJPY": "fx",
     "AUDJPY": "fx",
     "CADJPY": "fx",
     "CHFJPY": "fx",
+    "EURGBP": "fx",
+    # Bonds
+    "USTBOND": "bond",
+    "BUND": "bond",
+    "UKBOND": "bond",
 }
 
-FEE_BPS = {"crypto_alt": 10.0, "energy": 5.0, "equity_index": 2.0, "fx": 2.0, "metal": 2.0}
+FEE_BPS = {
+    "crypto_alt": 10.0,
+    "energy": 5.0,
+    "equity_index": 2.0,
+    "dollar_index": 2.0,
+    "fx": 2.0,
+    "fx_major": 2.0,
+    "metal": 2.0,
+    "precious_metal": 2.0,
+    "agricultural": 5.0,
+    "bond": 2.0,
+}
 
 COARSE_TEMPLATES: dict[str, dict[str, Any]] = {
     "crypto": {"lookback": 15, "buffer_bps": 125.0, "hold_min": 6, "hold_max": 10, "trend_mode": "bull_only"},
@@ -83,13 +136,21 @@ COARSE_TEMPLATES: dict[str, dict[str, Any]] = {
     "gold": {"lookback": 30, "buffer_bps": 100.0, "hold_min": 9, "hold_max": 15, "trend_mode": "sma200_95"},
     "short": {"lookback": 15, "buffer_bps": 100.0, "hold_min": 4, "hold_max": 5, "trend_mode": "bull_only"},
     "fx": {"lookback": 20, "buffer_bps": 75.0, "hold_min": 6, "hold_max": 10, "trend_mode": "bull_only"},
+    "agri": {"lookback": 30, "buffer_bps": 100.0, "hold_min": 9, "hold_max": 15, "trend_mode": "sma200_95"},
+    "dollar": {"lookback": 20, "buffer_bps": 75.0, "hold_min": 9, "hold_max": 15, "trend_mode": "sma200_95"},
+    "bond": {"lookback": 30, "buffer_bps": 75.0, "hold_min": 9, "hold_max": 15, "trend_mode": "sma200_95"},
 }
 
 TEMPLATE_BY_CLASS = {
     "crypto_alt": ("crypto", "metal", "short"),
     "energy": ("short", "metal", "crypto"),
     "equity_index": ("metal", "gold", "crypto"),
+    "dollar_index": ("dollar", "gold", "fx"),
     "fx": ("fx", "metal", "short"),
+    "fx_major": ("fx", "gold", "metal"),
+    "precious_metal": ("gold", "metal", "short"),
+    "agricultural": ("agri", "metal", "gold"),
+    "bond": ("bond", "gold", "metal"),
 }
 
 # Deep grid (applied to phase-1 winners only)
@@ -99,30 +160,61 @@ GRID_HOLDS = [(4, 5), (6, 10), (9, 15), (13, 15)]
 GRID_TRENDS = ["bull_only", "sma200_95"]
 GRID_MAX_BPS = 225.0
 
+# Slightly smaller grid when --extensive (many symbols)
+EXT_GRID_LOOKBACKS = [10, 20, 30]
+EXT_GRID_BUFFERS = [75.0, 100.0, 125.0]
+EXT_GRID_HOLDS = [(6, 10), (9, 15), (13, 15)]
+
 SWAP_TARGETS = ("XCUUSD", "BTCUSD")  # weakest sleeves in prior validation
 
 
-def build_universe(quick: bool) -> dict[str, str]:
+QUICK_UNIVERSE = frozenset(
+    {
+        "US500",
+        "NAS100",
+        "BRENT",
+        "CL",
+        "SOLUSDT",
+        "LINKUSDT",
+        "USDJPY",
+        "DOLLAR",
+        "COFFEE",
+        "XPTUSD",
+    }
+)
+
+
+def build_universe(quick: bool, extensive: bool) -> dict[str, str]:
     live = set(LIVE_SYMBOLS)
     out: dict[str, str] = {}
     for sym, cls in DUKA_CLASS.items():
-        if sym in live or sym not in DUKASCOPY_INSTRUMENTS:
+        if sym in live:
+            continue
+        key = sym.upper().replace("/", "").replace("-", "").replace("_", "")
+        if key not in DUKASCOPY_INSTRUMENTS:
             continue
         out[sym] = cls
     for sym, cls in BINANCE_CANDIDATES.items():
-        if sym not in live:
+        if sym not in live and sym != "DOGEUSDT":
             out[sym] = cls
     if quick:
-        keep = {
-            "US500",
-            "NAS100",
-            "BRENT",
-            "CL",
-            "SOLUSDT",
-            "LINKUSDT",
-            "USDJPY",
-        }
-        out = {k: v for k, v in out.items() if k in keep}
+        out = {k: v for k, v in out.items() if k in QUICK_UNIVERSE}
+    elif not extensive:
+        # Default: obvious + semi-obvious set
+        default_keep = QUICK_UNIVERSE | frozenset(
+            {
+                "DAX",
+                "N225",
+                "US2000",
+                "DIESEL",
+                "SUGAR",
+                "XPDUSD",
+                "EURUSD",
+                "AVAXUSDT",
+                "XRPUSDT",
+            }
+        )
+        out = {k: v for k, v in out.items() if k in default_keep}
     return out
 
 
@@ -272,13 +364,18 @@ def deep_grid(
     symbol: str,
     asset_class: str,
     seed_kw: dict[str, Any],
+    *,
+    extensive: bool = False,
 ) -> tuple[dict[str, Any], StrategyConfig, dict[str, Any]]:
     best_stats: dict[str, Any] | None = None
     best_kw: dict[str, Any] | None = None
     best_strat: StrategyConfig | None = None
     fee = FEE_BPS.get(asset_class, 10.0)
+    lookbacks = EXT_GRID_LOOKBACKS if extensive else GRID_LOOKBACKS
+    buffers = EXT_GRID_BUFFERS if extensive else GRID_BUFFERS
+    holds = EXT_GRID_HOLDS if extensive else GRID_HOLDS
     for lb, buf, (hmin, hmax), trend in itertools.product(
-        GRID_LOOKBACKS, GRID_BUFFERS, GRID_HOLDS, GRID_TRENDS
+        lookbacks, buffers, holds, GRID_TRENDS
     ):
         kw = {
             "lookback": lb,
@@ -345,10 +442,18 @@ def book_tests(
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--quick", action="store_true", help="Smaller symbol set")
-    ap.add_argument("--top-grid", type=int, default=10, help="How many symbols get full param grid")
+    ap.add_argument(
+        "--extensive",
+        action="store_true",
+        help="Full Dukascopy + Binance universe; grid all phase-1 symbols",
+    )
+    ap.add_argument("--top-grid", type=int, default=None, help="How many symbols get full param grid")
     args = ap.parse_args()
 
-    universe = build_universe(args.quick)
+    if args.top_grid is None:
+        args.top_grid = 6 if args.quick else (999 if args.extensive else 12)
+
+    universe = build_universe(args.quick, args.extensive)
     live = tuple(LIVE_SYMBOLS)
     print(f"Universe: {len(universe)} candidates | live book: {len(live)} sleeves", flush=True)
 
@@ -396,12 +501,18 @@ def main() -> None:
     phase1.sort(key=lambda r: r["coarse_stats"]["score_ex_2024"], reverse=True)
     top_syms = [r["symbol"] for r in phase1[: args.top_grid]]
 
-    print(f"\n=== Phase 2: param grid on top {len(top_syms)} ===", flush=True)
+    print(
+        f"\n=== Phase 2: param grid on {len(top_syms)} symbols "
+        f"({'extensive' if args.extensive else 'standard'} grid) ===",
+        flush=True,
+    )
     optimized: dict[str, dict[str, Any]] = {}
     for sym in top_syms:
         rec = next(r for r in phase1 if r["symbol"] == sym)
         raw = preload_raw((sym,))[sym]
-        kw, strat, st = deep_grid(cache, raw, sym, rec["asset_class"], rec["coarse_kw"])
+        kw, strat, st = deep_grid(
+            cache, raw, sym, rec["asset_class"], rec["coarse_kw"], extensive=args.extensive
+        )
         print(
             f"  {sym:8} best lb={kw['lookback']} buf={kw['buffer_bps']:.0f} "
             f"hold={kw['hold_min']}-{kw['hold_max']} {kw['trend_mode']} | "

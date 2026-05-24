@@ -241,7 +241,7 @@ Sleeves do **not** share risk logic:
 - Correlation is implicit (e.g. crypto risk-on days may fire multiple sleeves); there is **no** book-level max exposure or veto.
 - Combined backtest stats sum sleeve equity curves (`portfolio_param_sweep.py`).
 
-**2018+ reference (current 6-sleeve config, Dukascopy Saturday skip aligned with Pine):** ~**86.6%** book return, **PF ~2.78**, **max DD ~−3.13%** on $60k (`strategy_validation.py`, May 2026). Earlier ~91% figures were before Saturday-entry alignment on Dukascopy sleeves.
+**2018+ reference (current 7-sleeve live book, May 2026):** ~**99.8%** return, **PF ~3.41**, **max DD ~−2.26%** on ~$65k (`strategy_validation.py`). Sleeves: `BTCUSD`, `ETHUSDT`, `BNBUSDT`, `DOGEUSDT`, `XAUUSD`, `XAGUSD`, `BRENT`. See `EDGE_POLISH.md` for polish experiments.
 
 That profile fits a **low-frequency, positive-skew, time-stop** system: many small losses/fees, fewer larger winners, modest time in market (`exposure_pct` typically well below 100% per sleeve).
 
@@ -303,10 +303,10 @@ Output: `btc_breakout_clean/strategy_validation_results.json` (gitignored)
 
 | Metric | Value |
 |--------|-------|
-| Return | **86.6%** |
-| Max DD | **−3.13%** |
-| PF | **2.78** |
-| Trades (all sleeves) | **258** |
+| Return | **99.8%** |
+| Max DD | **−2.26%** |
+| PF | **3.41** |
+| Trades (all sleeves) | **229** |
 
 ### Per-sleeve — full sample & signal frequency
 
