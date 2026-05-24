@@ -114,6 +114,10 @@ class StrategyConfig:
     hold_max: int | None = None
     dynamic_hold: bool = False
     hold_giveback_pct: float = 0.03
+    # Hard stop from entry (fraction below entry_px, e.g. 0.06 = 6%). 0 = off.
+    stop_loss_pct: float = 0.0
+    # When True, intraday low can trigger stop; fill at stop price (conservative).
+    stop_use_low: bool = True
 
 
 def effective_hold_min(cfg: StrategyConfig) -> int:
@@ -148,6 +152,25 @@ def momentum_faded(
     if np.isfinite(slope) and slope < 0:
         return True
     return False
+
+
+def stop_loss_triggered(
+    df: pd.DataFrame,
+    i: int,
+    *,
+    entry_px: float,
+    stop_loss_pct: float,
+    stop_use_low: bool,
+) -> tuple[bool, float]:
+    """Return (hit, stop_px). stop_px is the limit price when hit."""
+    if stop_loss_pct <= 0.0 or entry_px <= 0.0:
+        return False, 0.0
+    stop_px = entry_px * (1.0 - stop_loss_pct)
+    if stop_use_low:
+        cur_low = float(df["low"].iloc[i])
+        return cur_low <= stop_px, stop_px
+    cur_close = float(df["close"].iloc[i])
+    return cur_close <= stop_px, stop_px
 
 
 @dataclass(frozen=True)
@@ -541,8 +564,16 @@ def simulate_account(
             atr = float(df["atr14"].iloc[i]) if np.isfinite(df["atr14"].iloc[i]) else 0.0
             peak_close = max(peak_close, cur_close)
             hold_bars = i - entry_i + 1
+            stop_hit, stop_px = stop_loss_triggered(
+                df,
+                i,
+                entry_px=entry_px,
+                stop_loss_pct=strat_cfg.stop_loss_pct,
+                stop_use_low=strat_cfg.stop_use_low,
+            )
             trail_hit = (
-                strat_cfg.trail_atr > 0.0
+                not stop_hit
+                and strat_cfg.trail_atr > 0.0
                 and atr > 0.0
                 and cur_close < peak_close * (1.0 - strat_cfg.trail_atr * atr)
             )
@@ -562,10 +593,10 @@ def simulate_account(
                 target_exit = hold_bars >= strat_cfg.hold_days
                 exit_reason = "fixed_hold" if target_exit else ""
 
-            if target_exit or trail_hit:
+            if stop_hit or target_exit or trail_hit:
                 signal_close = float(df["close"].iloc[signal_i_at_entry])
                 signal_prior_high = float(df["prior_high"].iloc[signal_i_at_entry])
-                exit_px = cur_close
+                exit_px = stop_px if stop_hit else cur_close
                 exit_notional = qty * exit_px
                 exit_fee = exit_notional * fee
                 gross_pnl = exit_notional - entry_notional
@@ -574,8 +605,12 @@ def simulate_account(
                 net_pnl = gross_pnl - fees
                 day_pnl += exit_pnl
                 equity += exit_pnl
-                action = ("ENTRY_EXIT" if hold_bars == 1 else "EXIT") + ("_TRAIL" if trail_hit else "")
-                if trail_hit:
+                action = ("ENTRY_EXIT" if hold_bars == 1 else "EXIT") + (
+                    "_STOP" if stop_hit else ("_TRAIL" if trail_hit else "")
+                )
+                if stop_hit:
+                    exit_reason = "stop_loss"
+                elif trail_hit:
                     exit_reason = "trail"
 
                 trades.append(
@@ -900,6 +935,9 @@ def print_report(
         print(f"  Filter: breakout size <= {strat_cfg.max_breakout_bps:.0f}bps")
     print(f"  Regime: {strat_cfg.trend_mode}")
     print(f"  Execution: signal at close, enter next open, exit after {strat_cfg.hold_days} trading day(s)")
+    if strat_cfg.stop_loss_pct > 0.0:
+        low_note = "daily low" if strat_cfg.stop_use_low else "close"
+        print(f"  Stop: {strat_cfg.stop_loss_pct:.1%} below entry ({low_note} trigger, stop fill)")
     if strat_cfg.trail_atr > 0.0:
         print(f"  Trail: close below peak close - {strat_cfg.trail_atr:.1f}x ATR14")
     print(f"  Sizing: min({strat_cfg.max_alloc:.2f}x, {strat_cfg.vol_target:.2%} / 20d daily vol)")

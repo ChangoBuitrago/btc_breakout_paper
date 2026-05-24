@@ -20,6 +20,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 from btc_breakout_binance_paper_bot import (  # noqa: E402
+    LIVE_MAX_CONCURRENT_ENTRIES,
     LIVE_STRATEGY_PARAMS,
     LIVE_SYMBOLS,
     fetch_binance_daily,
@@ -249,6 +250,56 @@ def run_full_book(
     return curves, {}, all_trades, equities
 
 
+def sim_overrides_for_max_concurrent(
+    raw_cache: dict[str, pd.DataFrame],
+    symbols: tuple[str, ...],
+    strategies: dict[str, StrategyConfig],
+    max_concurrent: int,
+) -> dict[str, dict[str, Any]]:
+    """Pass-1 uncapped replay → blocked entry dates for a portfolio concurrent cap."""
+    if max_concurrent <= 0 or len(symbols) <= 1:
+        return {}
+    _, _, base_trades, _ = run_full_book(raw_cache, symbols, strategies)
+    blocked = blocked_entries_max_concurrent(base_trades, max_concurrent)
+    return {sym: {"blocked_entry_dates": blocked[sym]} for sym in symbols}
+
+
+def merge_sim_overrides(
+    base: dict[str, dict[str, Any]] | None,
+    extra: dict[str, dict[str, Any]],
+    symbols: tuple[str, ...],
+) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {s: dict((base or {}).get(s, {})) for s in symbols}
+    for sym in symbols:
+        if sym not in extra:
+            continue
+        merged = {**out.get(sym, {}), **extra[sym]}
+        b0 = out.get(sym, {}).get("blocked_entry_dates")
+        b1 = extra[sym].get("blocked_entry_dates")
+        if b0 is not None and b1 is not None:
+            merged["blocked_entry_dates"] = frozenset(b0) | frozenset(b1)
+        out[sym] = merged
+    return out
+
+
+def run_full_book_live(
+    raw_cache: dict[str, pd.DataFrame],
+    symbols: tuple[str, ...],
+    strategies: dict[str, StrategyConfig],
+    sim_overrides_by_symbol: dict[str, dict[str, Any]] | None = None,
+    *,
+    max_concurrent: int | None = None,
+) -> tuple[dict[str, pd.DataFrame], dict[str, pd.DataFrame], pd.DataFrame, dict[str, float]]:
+    """Full book replay matching live: per-symbol stops + max concurrent entries (default 4)."""
+    cap = LIVE_MAX_CONCURRENT_ENTRIES if max_concurrent is None else max_concurrent
+    overrides = merge_sim_overrides(
+        sim_overrides_by_symbol,
+        sim_overrides_for_max_concurrent(raw_cache, symbols, strategies, cap),
+        symbols,
+    )
+    return run_full_book(raw_cache, symbols, strategies, overrides)
+
+
 def main() -> None:
     symbols = tuple(LIVE_SYMBOLS)
     print(f"Preloading OHLC for {symbols} ...", flush=True)
@@ -256,9 +307,15 @@ def main() -> None:
     print("Preload done.", flush=True)
 
     strategies = {s: live_strategy_config(s) for s in symbols}
-    curves, _, all_trades, equities = run_full_book(raw_cache, symbols, strategies)
+    curves, _, all_trades, equities = run_full_book_live(raw_cache, symbols, strategies)
     initial_total = sum(equities.values())
     baseline = portfolio_metrics(curves, all_trades, initial_total)
+    n_blocked_4 = sum(
+        len(sim_overrides_for_max_concurrent(raw_cache, symbols, strategies, LIVE_MAX_CONCURRENT_ENTRIES)[s][
+            "blocked_entry_dates"
+        ])
+        for s in symbols
+    )
 
     # --- Per-sleeve full sample + OOS windows ---
     windows: list[tuple[str, pd.Timestamp | None, pd.Timestamp | None]] = [
@@ -288,17 +345,18 @@ def main() -> None:
     _, _, xau_live_summary = run_sleeve(raw_cache["XAUUSD"], "XAUUSD", strategies["XAUUSD"], equities["XAUUSD"])
     _, _, xau_bull_summary = run_sleeve(raw_cache["XAUUSD"], "XAUUSD", xau_bull, equities["XAUUSD"])
 
-    # --- Overlays: max concurrent (2-pass blocked dates) ---
+    # --- Overlay: max 3 concurrent (baseline is live max 4) ---
     overlay_rows: list[dict[str, Any]] = []
-    blocked_by_sym = blocked_entries_max_concurrent(all_trades, 3)
-    total_blocked = sum(len(v) for v in blocked_by_sym.values())
-    sim_overrides = {sym: {"blocked_entry_dates": blocked_by_sym[sym]} for sym in symbols}
-    oc_curves, _, oc_trades, _ = run_full_book(raw_cache, symbols, strategies, sim_overrides)
+    oc_curves, _, oc_trades, _ = run_full_book_live(
+        raw_cache, symbols, strategies, max_concurrent=3
+    )
     oc_metrics = portfolio_metrics(oc_curves, oc_trades, initial_total)
+    blocked_3 = sim_overrides_for_max_concurrent(raw_cache, symbols, strategies, 3)
+    total_blocked_3 = sum(len(blocked_3[s]["blocked_entry_dates"]) for s in symbols)
     overlay_rows.append(
         {
             "label": "max_3_concurrent_sleeves",
-            "blocked_entry_events": total_blocked,
+            "blocked_entry_events": total_blocked_3,
             "metrics": oc_metrics,
             "passes_baseline": beats_baseline(baseline, oc_metrics),
         }
@@ -352,6 +410,8 @@ def main() -> None:
 
     report = {
         "generated_at": pd.Timestamp.utcnow().isoformat(),
+        "live_max_concurrent_entries": LIVE_MAX_CONCURRENT_ENTRIES,
+        "blocked_entry_events_max_4": n_blocked_4,
         "baseline_portfolio": baseline,
         "per_sleeve": per_sleeve,
         "xau_regime_compare": {
@@ -364,7 +424,10 @@ def main() -> None:
 
     OUT_PATH.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
 
-    print(f"\n=== BASELINE PORTFOLIO ({len(symbols)} sleeves, Saturday skip on Dukascopy) ===")
+    print(
+        f"\n=== BASELINE PORTFOLIO ({len(symbols)} sleeves, max {LIVE_MAX_CONCURRENT_ENTRIES} concurrent, "
+        f"{n_blocked_4} blocked entries) ==="
+    )
     print(
         f"  return={baseline['return_pct']:.2f}%  maxDD={baseline['max_drawdown_pct']:.2f}%  "
         f"PF={baseline['profit_factor']:.3f}  trades={baseline['trades']}"

@@ -192,6 +192,11 @@ def summarize_open_position(
     fade_now = dynamic and hold_day >= hold_min and momentum_faded(
         df, len(df) - 1, peak_close=peak_close, giveback_pct=strat_cfg.hold_giveback_pct
     )
+    stop_px = 0.0
+    stop_dist_pct = None
+    if strat_cfg.stop_loss_pct > 0.0:
+        stop_px = entry_px * (1.0 - strat_cfg.stop_loss_pct)
+        stop_dist_pct = 100.0 * (cur_close / stop_px - 1.0)
     max_exit_idx = entry_idx + hold_max - 1
     exit_target = (
         str(c.iloc[max_exit_idx]["date"])[:10]
@@ -213,6 +218,9 @@ def summarize_open_position(
         "exit_target": exit_target,
         "unrealized_pct": unrealized_pct,
         "size_frac": size_frac,
+        "stop_loss_pct": strat_cfg.stop_loss_pct,
+        "stop_px": stop_px if stop_px > 0 else None,
+        "stop_dist_pct": stop_dist_pct,
     }
 
 
@@ -255,10 +263,15 @@ def signal_status(
             if open_pos.get("momentum_fade")
             else f"exit ≤{open_pos['exit_target']}"
         )
+        stop_note = ""
+        if open_pos.get("stop_px"):
+            dist = open_pos.get("stop_dist_pct")
+            dist_s = f"{dist:+.1f}%" if dist is not None else "n/a"
+            stop_note = f" stop@{open_pos['stop_px']:,.4g} ({dist_s} cushion)"
         return (
             f"LONG {hold_label} "
             f"{open_pos['unrealized_pct']:+.1f}% vs entry "
-            f"({exit_note})"
+            f"({exit_note}{stop_note})"
         )
     if pending:
         if pending["size_frac"] > 0.0:

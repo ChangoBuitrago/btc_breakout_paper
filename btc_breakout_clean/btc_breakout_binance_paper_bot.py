@@ -61,6 +61,8 @@ LIVE_SYMBOLS = (
 LIVE_PORTFOLIO_NOTIONAL = 100_000.0
 LIVE_SLEEVE_EQUITY = LIVE_PORTFOLIO_NOTIONAL / len(LIVE_SYMBOLS)  # $12,500 each
 LIVE_MAX_CONCURRENT_ENTRIES = 4
+# Sleeves that get a hard stop from entry (crypto). Metals/oil unchanged.
+LIVE_CRYPTO_SYMBOLS = frozenset({"BTCUSD", "ETHUSDT", "BNBUSDT", "SOLUSDT", "DOGEUSDT"})
 LIVE_STRATEGY_PARAMS: dict[str, dict[str, float | int | str | bool]] = {
     "BTCUSD": {
         "source": "dukascopy",
@@ -73,6 +75,7 @@ LIVE_STRATEGY_PARAMS: dict[str, dict[str, float | int | str | bool]] = {
         "hold_min": 5,
         "hold_max": 10,
         "dynamic_hold": True,
+        "stop_loss_pct": 0.05,
         "fee_bps": 10.0,
         "compound": True,
     },
@@ -87,6 +90,7 @@ LIVE_STRATEGY_PARAMS: dict[str, dict[str, float | int | str | bool]] = {
         "hold_min": 10,
         "hold_max": 13,
         "dynamic_hold": True,
+        "stop_loss_pct": 0.06,
         "fee_bps": 10.0,
         "compound": True,
     },
@@ -101,6 +105,7 @@ LIVE_STRATEGY_PARAMS: dict[str, dict[str, float | int | str | bool]] = {
         "hold_min": 6,
         "hold_max": 10,
         "dynamic_hold": True,
+        "stop_loss_pct": 0.05,
         "fee_bps": 10.0,
         "compound": True,
     },
@@ -115,6 +120,7 @@ LIVE_STRATEGY_PARAMS: dict[str, dict[str, float | int | str | bool]] = {
         "hold_min": 9,
         "hold_max": 15,
         "dynamic_hold": True,
+        "stop_loss_pct": 0.12,
         "fee_bps": 10.0,
         "compound": True,
     },
@@ -171,6 +177,7 @@ LIVE_STRATEGY_PARAMS: dict[str, dict[str, float | int | str | bool]] = {
         "hold_min": 9,
         "hold_max": 15,
         "dynamic_hold": True,
+        "stop_loss_pct": 0.12,
         "fee_bps": 10.0,
         "compound": True,
     },
@@ -228,6 +235,8 @@ def live_strategy_config(symbol: str = "BTCUSD") -> StrategyConfig:
         hold_max=hold_max,
         dynamic_hold=dynamic_hold,
         hold_giveback_pct=float(params.get("hold_giveback_pct", 0.03)),
+        stop_loss_pct=float(params.get("stop_loss_pct", 0.0)),
+        stop_use_low=bool(params.get("stop_use_low", True)),
     )
 
 

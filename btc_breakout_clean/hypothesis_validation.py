@@ -36,6 +36,7 @@ from strategy_validation import (  # noqa: E402
     portfolio_metrics,
     preload_raw,
     run_full_book,
+    run_full_book_live,
     run_sleeve,
     sleeve_window_metrics,
 )
@@ -59,7 +60,7 @@ def run_book(
     syms = tuple(symbols)
     strats = strategies or {s: live_strategy_config(s) for s in syms}
     eq = equities or _default_equities(syms)
-    curves, _, trades, _ = run_full_book(raw, syms, strats, sim_overrides)
+    curves, _, trades, _ = run_full_book_live(raw, syms, strats, sim_overrides)
     initial = sum(eq.values())
     metrics = portfolio_metrics(curves, trades, initial)
     ex = sleeve_window_metrics(trades, initial, EX_2024, None) if not trades.empty else {}

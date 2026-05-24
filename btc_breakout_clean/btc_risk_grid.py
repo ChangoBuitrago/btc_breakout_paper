@@ -25,7 +25,7 @@ from btc_breakout_binance_paper_bot import LIVE_SYMBOLS, live_strategy_config, l
 from btc_breakout_paper_sim import max_drawdown, profit_factor  # noqa: E402
 from strategy_validation import (  # noqa: E402
     preload_raw,
-    run_full_book,
+    run_full_book_live,
     run_sleeve,
     sleeve_window_metrics,
 )
@@ -82,7 +82,7 @@ def run_book_fixed(
     sim_ov: dict[str, dict[str, Any]] = {}
     if btc_hwm_pct is not None and btc_hwm_pct > 0:
         sim_ov[BTC] = {"hwm_pause_pct": float(btc_hwm_pct)}
-    curves, _, trades, _ = run_full_book(raw, LIVE_SYMBOLS, strats, sim_ov or None)
+    curves, _, trades, _ = run_full_book_live(raw, LIVE_SYMBOLS, strats, sim_ov or None)
     initial = sum(equities.values())
     from strategy_validation import portfolio_equity_series
 

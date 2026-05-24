@@ -25,7 +25,7 @@ from strategy_validation import (  # noqa: E402
     beats_baseline,
     portfolio_metrics,
     preload_raw,
-    run_full_book,
+    run_full_book_live,
     sleeve_window_metrics,
 )
 
@@ -48,7 +48,7 @@ def run_variant(
     for sym, kw in (strategy_overrides or {}).items():
         if sym in strats:
             strats[sym] = replace(strats[sym], **kw)
-    curves, _, trades, equities = run_full_book(raw, symbols, strats, sim_overrides)
+    curves, _, trades, equities = run_full_book_live(raw, symbols, strats, sim_overrides)
     initial = sum(equities.values())
     metrics = portfolio_metrics(curves, trades, initial)
     ex = sleeve_window_metrics(trades, initial, EX_2024, None) if not trades.empty else {}
@@ -130,18 +130,6 @@ def main() -> None:
         "hwm_pause_btc_only",
         live,
         sim_overrides={"BTCUSD": {"hwm_pause_pct": 12.0}},
-    )
-
-    # Enforce live max-4 concurrent (already in bot config)
-    from strategy_validation import blocked_entries_max_concurrent
-
-    strats = {s: live_strategy_config(s) for s in live}
-    _, _, base_trades, _ = run_full_book(raw, live, strats)
-    blocked = blocked_entries_max_concurrent(base_trades, 4)
-    add(
-        "max_4_concurrent",
-        live,
-        sim_overrides={s: {"blocked_entry_dates": blocked[s]} for s in live},
     )
 
     baseline = variants[0]

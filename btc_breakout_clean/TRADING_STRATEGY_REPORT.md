@@ -155,11 +155,26 @@ If `vol20` is missing or zero → **size_frac = 0** → signal effectively block
 
 ### Live configuration
 
-- **`hold_days`:** calendar **sessions in market** from entry bar through exit bar (inclusive count).
-- **`trail_atr = 0`:** **no** trailing stop in production.
-- Exit price: **close** of the bar where `hold_bars >= hold_days`.
+- **Dynamic hold** (most sleeves): exit at **`hold_max`**, or after **`hold_min`** if momentum faded (3% giveback from peak close, close &lt; SMA50, or negative SMA50 slope).
+- **`trail_atr = 0`:** no trailing stop in production.
+- **Crypto hard stop** (per symbol, from `crypto_stop_validation.py` solo grid):
 
-Example with `hold_days = 5`: enter Monday open → exit **Friday close** (5 session-days in position).
+  | Symbol | Stop |
+  |--------|------|
+  | BTCUSD | 5% |
+  | ETHUSDT | 6% |
+  | BNBUSDT | 5% |
+  | SOLUSDT | 12% |
+  | DOGEUSDT | 12% |
+
+  Trigger: daily **low** touches stop; fill at stop price. Can fire from day 1. Metals/oil have **no** hard stop.
+
+### Portfolio entry cap (live)
+
+- **`LIVE_MAX_CONCURRENT_ENTRIES = 4`:** at most four sleeves may have an open position at once.
+- Daily runner does a **two-pass** replay: uncapped pass → compute blocked signal dates → capped pass (same as `run_full_book_live()` in validation).
+- Historical replay blocks **8** entry days on the current 8-sleeve book (2018+).
+- Default exit price: **close** of the exit bar (except stop fills at the stop limit).
 
 ### Optional (research only)
 
@@ -169,7 +184,7 @@ If `trail_atr > 0`, exit early when:
 close < peak_close_since_entry × (1 − trail_atr × atr14)
 ```
 
-Not used in live params.
+Not used in live params. Grid: `crypto_stop_validation.py`.
 
 ### End of data
 
@@ -177,12 +192,9 @@ Open trades at the last bar are **force-closed** at that bar’s close.
 
 ### What is **not** an exit
 
-- No stop-loss
 - No take-profit
 - No exit on opposite signal
-- No exit on regime turning off while in trade
-
-The only scheduled exit is **time**.
+- No exit on regime turning off while in trade (crypto stop is separate)
 
 ---
 
@@ -363,9 +375,9 @@ Tested in `strategy_validation.py` against the same baseline. **Neither overlay 
 
 | Overlay | Return | Max DD | PF | vs baseline |
 |---------|--------|--------|-----|-------------|
-| **Baseline** | 86.6% | −3.13% | 2.78 | — |
-| Max **3** concurrent sleeves (skip 4th+ entry) | 78.7% | −3.32% | 2.73 | **Fails** (9 blocked entries) |
-| Per-sleeve **12% HWM pause** (defer entries until equity recovers) | 82.7% | −3.36% | 3.11 | **Fails** |
+| **Baseline** (per-symbol crypto stops + **max 4** concurrent) | **105.2%** | **−1.61%** | **3.59** | — |
+| Max **3** concurrent sleeves | 97.9% | −1.60% | 3.54 | **Fails** (~26 blocked) |
+| Per-sleeve **12% HWM pause** | 88.3% | −2.47% | 3.16 | **Fails** |
 
 **Interpretation:** Book-level caps and HWM pauses trade return for modest PF/DD shifts in this historical replay. They remain **candidates for live risk policy** but are not promoted as backtest improvements. Any adoption should be a deliberate live risk choice, not a parameter tune.
 
@@ -375,4 +387,4 @@ Tested in `strategy_validation.py` against the same baseline. **Neither overlay 
 
 ## 17. Summary
 
-You are running a **daily, long-only breakout continuation** system: buy when **yesterday’s close** breaks above the prior **N-day max close** by at least **buffer_bps** but not more than **max_breakout_bps**, only when a **trend regime** is on; enter at **today’s open** with size **inversely proportional to 20-day volatility** (capped at 75% of sleeve equity); exit at the **close** after **hold_days** sessions with **no stop** in live config. Six instruments share the same engine but different **lookback / buffer / hold / regime** to match each market’s speed and mean-reversion tendency; the book is optimized for **robust aggregate stats** rather than maximum backtest return.
+You are running a **daily, long-only breakout continuation** system: buy when **yesterday’s close** breaks above the prior **N-day max close** by at least **buffer_bps** but not more than **max_breakout_bps**, only when a **trend regime** is on; enter at **today’s open** with size **inversely proportional to 20-day volatility** (capped at 75% of sleeve equity), with **at most four concurrent sleeves**; exit on **dynamic hold**, **crypto hard stops**, or **max hold**. Eight instruments share the same engine but different **lookback / buffer / hold / regime / stop**; the book is optimized for **robust aggregate stats** rather than maximum backtest return.
