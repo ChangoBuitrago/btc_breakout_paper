@@ -184,7 +184,7 @@ If `trail_atr > 0`, exit early when:
 close < peak_close_since_entry × (1 − trail_atr × atr14)
 ```
 
-Not used in live params. Grid: `crypto_stop_validation.py`.
+Not used in live params. Research grid: `trail_validation.py` (also `trail_n_mult` for peak − 2×N).
 
 ### End of data
 
@@ -249,15 +249,13 @@ Each sleeve is the **same strategy class** with different knobs (`LIVE_STRATEGY_
 
 Sleeves do **not** share risk logic:
 
-- Each runs its own signal → entry → hold → exit loop on **$10,000** starting equity (compounded per sleeve).
-- Correlation is implicit (e.g. crypto risk-on days may fire multiple sleeves); there is **no** book-level max exposure or veto.
-- Combined backtest stats sum sleeve equity curves (`portfolio_param_sweep.py`).
+- Each runs its own signal → entry → hold → exit loop on **$12,500** sleeve equity (compounded per sleeve).
+- Correlation is implicit (e.g. crypto risk-on days may fire multiple sleeves); book caps **max 4 concurrent** entries (`run_full_book_live`).
+- Combined backtest stats sum sleeve equity curves (`strategy_validation.py`).
 
-**2018+ reference (current 7-sleeve live book, May 2026):** ~**99.8%** return, **PF ~3.41**, **max DD ~−2.26%** on ~$65k (`strategy_validation.py`). Sleeves: `BTCUSD`, `ETHUSDT`, `BNBUSDT`, `DOGEUSDT`, `XAUUSD`, `XAGUSD`, `BRENT`. See `EDGE_POLISH.md` for polish experiments.
+**2018+ reference (8-sleeve live book, May 2026, $100k):** see §15 and `pro_benchmark_comparison.py`.
 
-That profile fits a **low-frequency, positive-skew, time-stop** system: many small losses/fees, fewer larger winners, modest time in market (`exposure_pct` typically well below 100% per sleeve).
-
-Re-run anytime: `python3 btc_breakout_clean/strategy_validation.py` → `strategy_validation_results.json`.
+Re-run: `python3 btc_breakout_clean/strategy_validation.py` and `python3 btc_breakout_clean/pro_benchmark_comparison.py`.
 
 ---
 
@@ -311,14 +309,20 @@ Re-run anytime: `python3 btc_breakout_clean/strategy_validation.py` → `strateg
 Script: `btc_breakout_clean/strategy_validation.py`  
 Output: `btc_breakout_clean/strategy_validation_results.json` (gitignored)
 
-**Portfolio baseline (2018+, live params, Saturday skip on Dukascopy):**
+**Portfolio baseline (2018+, live params, per-symbol crypto stops, max 4 concurrent):**
 
-| Metric | Value |
-|--------|-------|
-| Return | **99.8%** |
-| Max DD | **−2.26%** |
-| PF | **3.41** |
-| Trades (all sleeves) | **229** |
+| Metric | Book | Worst sleeve |
+|--------|------|----------------|
+| Return | **105.2%** | — |
+| CAGR | **8.95%** | — |
+| Max DD | **−1.61%** | **−13.0%** (SOLUSDT) |
+| PF | **3.58** | — |
+| Sharpe | **1.66** | — |
+| Ann. vol | **3.6%** (book) | — |
+| Calmar | **5.55** | — |
+| Trades | **250** | — |
+
+Always report **book DD** and **worst-sleeve DD** together — diversification compresses book drawdown.
 
 ### Per-sleeve — full sample & signal frequency
 
@@ -385,6 +389,117 @@ Tested in `strategy_validation.py` against the same baseline. **Neither overlay 
 
 ---
 
-## 17. Summary
+## 17. Pro benchmark comparison (PF / DD / Sharpe)
+
+Script: `btc_breakout_clean/pro_benchmark_comparison.py`  
+Output: `pro_benchmark_comparison_results.json` (gitignored)
+
+Compares **live book** vs **Turtle System 1 replay** (20-day high entry, 10-day low exit, 2×N stop, 1% risk, long-only) on the **same 8 symbols, fees, and 2018+ data**, both with **max 4 concurrent** entries.
+
+**Latest replay (2018+):**
+
+| Strategy | CAGR | Book DD | Worst sleeve DD | PF | Sharpe | Vol | Calmar |
+|----------|------|---------|-----------------|-----|--------|-----|--------|
+| Live breakout book | 9.0% | −1.6% | −13.0% | 3.58 | 1.66 | 3.6% | 5.55 |
+| Turtle S1 (same data) | 6.3% | −2.8% | −9.8% | 3.36 | 0.97 | 4.5% | 2.30 |
+
+Literature rows (Turtle original, revised Turtle, BTC-only Donchian blogs) are **reference only** — different periods, leverage, and universes.
+
+Re-run after validation changes:
+
+```bash
+python3 btc_breakout_clean/pro_benchmark_comparison.py
+```
+
+---
+
+## 17.1 Turtle adoption experiments (research only)
+
+Engine supports `exit_channel_lookback` and `channel_exit_replaces_fade` in `btc_breakout_paper_sim.py`. **Live params unchanged** (channel off).
+
+| Experiment | Script | Result |
+|------------|--------|--------|
+| **2×N ATR stops** (crypto) | `atr_stop_validation.py` | Fixed % wins on return, book DD, PF, Sharpe — **keep live % stops** |
+| **10-day low channel exit** (crypto) | `channel_exit_validation.py` | See below — **keep live momentum fade** |
+| **2N trail from peak** (crypto) | `trail_validation.py` | See below — **keep live trail off** |
+| **ATR risk sizing** (crypto) | `turtle_adoption_validation.py` | Vol sizing wins — **keep live** |
+| **55d backup entry** (crypto) | `turtle_adoption_validation.py` | Higher return, fails DD gate — **keep live** |
+| **Pyramiding** (crypto) | `turtle_adoption_validation.py` | Return ↑, DD explodes — **keep live** |
+
+**Channel exit replay (2018+, max 4, per-symbol % stops):**
+
+| Mode | Return | Book DD | Worst sleeve DD | PF | Sharpe | Channel exits |
+|------|--------|---------|-----------------|-----|--------|-----------------|
+| Baseline (live) | 105.2% | −1.61% | −13.0% | 3.58 | 1.66 | 0 |
+| Add 10d channel (with fade) | 105.2% | −1.61% | −13.0% | 3.58 | 1.66 | 0 (fade always first) |
+| Replace fade with 10d channel | 113.4% | −2.27% | −15.5% | 3.50 | 1.58 | 3 |
+
+**Interpretation:** Adding a Turtle exit channel is a no-op while momentum fade is active. Replacing fade raises return but **fails** the promotion gate (deeper book and sleeve DD, lower Sharpe/Calmar). Do not wire to live without a new gate pass.
+
+**Trail replay (2018+, max 4, per-symbol % stops, dynamic hold):**
+
+| Mode | Return | Book DD | Worst sleeve DD | PF | Sharpe | Trail exits |
+|------|--------|---------|-----------------|-----|--------|-------------|
+| Baseline (live) | **105.2%** | **−1.61%** | −13.0% | **3.58** | **1.66** | 0 |
+| `trail_atr` 1.0×atr14 | 73.6% | −1.69% | −10.2% | 3.00 | 1.53 | 117 |
+| `trail_atr` 1.5×atr14 | 88.8% | −1.69% | −12.0% | 3.28 | 1.61 | 87 |
+| `trail_atr` 2.0×atr14 | 101.9% | −2.16% | −11.1% | 3.58 | 1.69 | 50 |
+| **2N peak** (`peak − 2×N`) | 55.6% | −2.06% | −13.9% | 2.42 | 1.29 | 55 (`trail_n`) |
+
+**Interpretation:** All trail variants **fail** the promotion gate vs baseline (return / PF / DD). The legacy `trail_atr` path uses **atr14** (mean abs daily return), not dollar N. True Turtle **2N-from-peak** cuts return sharply while hard % stops remain — trails fire too early vs momentum-fade exits. Live stays `trail_atr = 0`, `trail_n_mult = 0`.
+
+**Sizing / backup / pyramid replay (2018+, max 4, per-symbol % stops):**
+
+| Mode | Return | Book DD | Worst sleeve DD | PF | Sharpe | Trades |
+|------|--------|---------|-----------------|-----|--------|--------|
+| Baseline (live) | **105.2%** | **−1.61%** | −13.0% | **3.58** | **1.66** | 250 |
+| ATR risk 0.5% / unit | 32.1% | −1.32% | −10.2% | 2.89 | 1.07 | 250 |
+| ATR risk 1% / unit | 39.0% | −1.35% | −10.2% | 3.03 | 1.26 | 250 |
+| ATR risk 1.5% / unit | 46.7% | −1.39% | −10.2% | 3.15 | 1.42 | 250 |
+| **55d backup entry** | 111.3% | −1.94% | −13.0% | 3.80 | 1.70 | 253 |
+| Pyramid 4×0.5N | 210.5% | −8.15% | −36.5% | 2.51 | 0.99 | 255 |
+| Pyramid 4×1.0N | 119.4% | −5.14% | −26.6% | 2.45 | 1.04 | 256 |
+| Full stack (all three) | 56.6% | −1.43% | −9.5% | 3.15 | 1.36 | 258 |
+
+**Interpretation:** **None** pass the promotion gate vs baseline. Turtle **ATR sizing** shrinks positions (~3–5% CAGR vs 9%) — book DD similar but return collapses. **55d backup** is the only single tweak with better return/Sharpe/PF, but book DD **−1.94%** fails the gate (tolerance vs −1.61%). **Pyramiding** lifts return but sleeve DD blows out (BNB −36%). Combined **turtle_full** dilutes everything. Live stays vol sizing, primary lookback only, no pyramid.
+
+### False-breakout filters (modern CTA-style)
+
+Script: `breakout_quality_validation.py` — engine fields `breakout_min_close_position`, `breakout_min_range_expansion`, `require_weekly_trend`.
+
+| Mode | Return | Book DD | PF | Sharpe | Trades |
+|------|--------|---------|-----|--------|--------|
+| **Baseline (live)** | **105.2%** | **−1.61%** | **3.58** | **1.66** | 250 |
+| Close top 35% of range | 82.6% | −2.06% | 3.43 | 1.55 | 214 |
+| Close top 30% of range | 61.1% | −1.87% | 2.93 | 1.36 | 200 |
+| Range ≥ 20d avg | 72.4% | −1.93% | 3.41 | 1.38 | 181 |
+| Range ≥ 1.2× avg | 68.1% | −1.46% | 4.08 | 1.44 | 147 |
+| Weekly > 40w SMA | 90.6% | −2.31% | 3.72 | 1.57 | 217 |
+| All three combined | 44.3% | −2.94% | 3.25 | 1.12 | 124 |
+
+**Interpretation:** Filters drop trade count and **cut return** more than they improve book DD. **None** pass the promotion gate. Close-in-range and combo are too strict; weekly trend alone is the softest filter but still fails on DD/return vs baseline. **Keep live without quality gates** — existing buffer, max breakout bps, and close-based breakout already play a similar role.
+
+### Out-of-box experiment grid
+
+Script: `oob_experiments_validation.py` (19 modes + baseline). Engine hooks in `btc_breakout_paper_sim.py`; book overlays in `oob_book_overlays.py`.
+
+**Promotion gate pass (6):** mostly **no-ops** — `signal_decay_*`, `stop_cooldown_*`, `funding_skip_3bps`, `dynamic_drop_xcu` identical to baseline on this replay.
+
+**Worth another look (failed gate but interesting):**
+
+| Mode | Return | Book DD | Sharpe | Note |
+|------|--------|---------|--------|------|
+| `partial_exit_50` | 106.0% | −1.75% | **1.81** | Best Sharpe; slightly worse DD |
+| `gap_skip_2p5` | 104.2% | −1.61% | 1.69 | Same DD as baseline |
+| `vol_adaptive_buffer` | 112.1% | −2.69% | 1.59 | +7% return, DD fails |
+| `marginal_risk_4` | 103.5% | −1.61% | 1.64 | ~same as FCFS max-4 |
+
+**Clear rejects:** `global_risk_on_*` (return −40%), `two_close_confirm` (27% return), `dynamic_drop_doge_brent` (+12% ret, −2.45% DD).
+
+**Keep live** unless you explicitly accept DD trade-offs for `partial_exit_50` or `gap_skip_2p5` research trials.
+
+---
+
+## 18. Summary
 
 You are running a **daily, long-only breakout continuation** system: buy when **yesterday’s close** breaks above the prior **N-day max close** by at least **buffer_bps** but not more than **max_breakout_bps**, only when a **trend regime** is on; enter at **today’s open** with size **inversely proportional to 20-day volatility** (capped at 75% of sleeve equity), with **at most four concurrent sleeves**; exit on **dynamic hold**, **crypto hard stops**, or **max hold**. Eight instruments share the same engine but different **lookback / buffer / hold / regime / stop**; the book is optimized for **robust aggregate stats** rather than maximum backtest return.

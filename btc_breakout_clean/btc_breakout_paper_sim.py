@@ -116,8 +116,54 @@ class StrategyConfig:
     hold_giveback_pct: float = 0.03
     # Hard stop from entry (fraction below entry_px, e.g. 0.06 = 6%). 0 = off.
     stop_loss_pct: float = 0.0
+    # Turtle-style stop: entry_px - stop_atr_mult × n_atr20 (true range). 0 = off.
+    stop_atr_mult: float = 0.0
+    stop_atr_period: int = 20
     # When True, intraday low can trigger stop; fill at stop price (conservative).
     stop_use_low: bool = True
+    # Turtle-style exit: close below prior N-day low (Donchian exit channel). 0 = off.
+    exit_channel_lookback: int = 0
+    # If True, channel exit replaces momentum_fade (still respects hold_min / hold_max).
+    channel_exit_replaces_fade: bool = False
+    # Turtle-style trail: low touches peak_close - trail_n_mult × n_atr20 (ratchets with peak). 0 = off.
+    trail_n_mult: float = 0.0
+    # Sizing: "vol" = vol_target/vol20 (live); "atr_risk" = Turtle 1% risk per 2N unit.
+    sizing_mode: str = "vol"
+    atr_risk_pct: float = 0.01
+    atr_risk_stop_n: float = 2.0
+    # System-2 backup entry: also signal on backup_entry_lookback-day high (0 = off).
+    backup_entry_lookback: int = 0
+    # Pyramiding: max units (1 = no adds); add when prior high >= last_add + pyramid_n_step × N.
+    max_pyramid_units: int = 1
+    pyramid_n_step: float = 0.5
+    # Breakout quality: close in top (1-x) of day range; 0.65 = top 35%. 0 = off.
+    breakout_min_close_position: float = 0.0
+    # Day range must be >= mult × 20d avg range pct. 0 = off; 1.0 = at least average expansion.
+    breakout_min_range_expansion: float = 0.0
+    # Require weekly close > weekly SMA (reduces false breakouts on weak days).
+    require_weekly_trend: bool = False
+    weekly_sma_weeks: int = 40
+    # OOB: pending signal expires after N sessions without entry (0 = off).
+    signal_max_pending_days: int = 0
+    # OOB: skip entry if |open/signal_close-1|×100 exceeds this (0 = off).
+    max_gap_entry_pct: float = 0.0
+    # OOB: no re-entry for N days after a stop exit (0 = off).
+    post_stop_cooldown_days: int = 0
+    # OOB: buffer_bps scaled by (1 + mult × (vol20/ref_vol - 1)); 0 = off.
+    vol_buffer_vol_mult: float = 0.0
+    # OOB: prior close must also clear breakout band (two-day confirmation).
+    require_two_close_confirm: bool = False
+    # OOB: wider lookback when vol20 > median (high-vol = slower ceiling).
+    adaptive_lookback_wide: bool = False
+    adaptive_lookback_min: int = 10
+    adaptive_lookback_max: int = 40
+    # OOB: extend hold_max by N days when price makes new highs after hold_min.
+    extend_hold_on_new_highs: int = 0
+    extend_hold_max_extra: int = 10
+    # OOB: on momentum_fade exit only this fraction (0 = full exit; 0.5 = half runner).
+    partial_exit_frac: float = 0.0
+    # OOB: skip entry when vol20 above this rolling percentile (1.0 = off).
+    meta_vol20_max_pctile: float = 1.0
 
 
 def effective_hold_min(cfg: StrategyConfig) -> int:
@@ -154,23 +200,89 @@ def momentum_faded(
     return False
 
 
-def stop_loss_triggered(
+def compute_entry_size_frac(
+    df: pd.DataFrame,
+    entry_bar_i: int,
+    signal_i: int,
+    strat_cfg: StrategyConfig,
+    sizing_equity: float,
+) -> float:
+    """Position size as fraction of sizing_equity (notional / equity)."""
+    if sizing_equity <= 0.0:
+        return 0.0
+    if strat_cfg.sizing_mode == "atr_risk":
+        px = float(df["open"].iloc[entry_bar_i])
+        n_atr = float(df["n_atr20"].iloc[entry_bar_i])
+        if not np.isfinite(px) or px <= 0.0 or not np.isfinite(n_atr) or n_atr <= 0.0:
+            return 0.0
+        stop_n = strat_cfg.atr_risk_stop_n if strat_cfg.atr_risk_stop_n > 0.0 else 2.0
+        stop_dist = stop_n * n_atr
+        notional = strat_cfg.atr_risk_pct * sizing_equity * px / stop_dist
+        return min(strat_cfg.max_alloc, notional / sizing_equity)
+    rv = float(df["vol20"].iloc[signal_i])
+    if not np.isfinite(rv) or rv <= 0.0:
+        return 0.0
+    return min(strat_cfg.max_alloc, strat_cfg.vol_target / rv)
+
+
+def channel_exit_triggered(df: pd.DataFrame, i: int, *, lookback: int, cur_close: float) -> bool:
+    """True when close breaks below the prior lookback-session low channel (Turtle exit)."""
+    if lookback <= 0:
+        return False
+    exit_level = float(df["exit_channel_level"].iloc[i]) if "exit_channel_level" in df.columns else float("nan")
+    return np.isfinite(exit_level) and cur_close < exit_level
+
+
+def true_range_series(df: pd.DataFrame) -> pd.Series:
+    prev_close = df["close"].shift(1)
+    hl = df["high"] - df["low"]
+    hc = (df["high"] - prev_close).abs()
+    lc = (df["low"] - prev_close).abs()
+    return pd.concat([hl, hc, lc], axis=1).max(axis=1)
+
+
+def entry_hard_stop_px(entry_px: float, n_atr: float, cfg: StrategyConfig) -> float:
+    """Long stop limit: highest (tightest) of pct and ATR floors. 0 = no stop."""
+    if entry_px <= 0.0:
+        return 0.0
+    floors: list[float] = []
+    if cfg.stop_loss_pct > 0.0:
+        floors.append(entry_px * (1.0 - cfg.stop_loss_pct))
+    if cfg.stop_atr_mult > 0.0 and np.isfinite(n_atr) and n_atr > 0.0:
+        floors.append(entry_px - cfg.stop_atr_mult * n_atr)
+    if not floors:
+        return 0.0
+    return max(floors)
+
+
+def hard_stop_triggered(
     df: pd.DataFrame,
     i: int,
     *,
-    entry_px: float,
-    stop_loss_pct: float,
+    stop_px: float,
     stop_use_low: bool,
-) -> tuple[bool, float]:
-    """Return (hit, stop_px). stop_px is the limit price when hit."""
-    if stop_loss_pct <= 0.0 or entry_px <= 0.0:
-        return False, 0.0
-    stop_px = entry_px * (1.0 - stop_loss_pct)
+) -> bool:
+    if stop_px <= 0.0:
+        return False
     if stop_use_low:
-        cur_low = float(df["low"].iloc[i])
-        return cur_low <= stop_px, stop_px
-    cur_close = float(df["close"].iloc[i])
-    return cur_close <= stop_px, stop_px
+        return float(df["low"].iloc[i]) <= stop_px
+    return float(df["close"].iloc[i]) <= stop_px
+
+
+def stop_exit_reason(entry_px: float, n_atr: float, stop_px: float, cfg: StrategyConfig) -> str:
+    if stop_px <= 0.0:
+        return "stop_loss"
+    px_atr = (
+        entry_px - cfg.stop_atr_mult * n_atr
+        if cfg.stop_atr_mult > 0.0 and np.isfinite(n_atr) and n_atr > 0.0
+        else 0.0
+    )
+    px_pct = entry_px * (1.0 - cfg.stop_loss_pct) if cfg.stop_loss_pct > 0.0 else 0.0
+    if px_atr > 0.0 and stop_px >= px_atr - 1e-12:
+        return "stop_atr"
+    if px_pct > 0.0 and stop_px >= px_pct - 1e-12:
+        return "stop_loss"
+    return "stop_loss"
 
 
 @dataclass(frozen=True)
@@ -422,16 +534,66 @@ def add_indicators(df: pd.DataFrame, cfg: StrategyConfig) -> pd.DataFrame:
     out["ret"] = out["close"].pct_change()
     out["vol20"] = out["ret"].rolling(20).std()
     out["atr14"] = out["close"].pct_change().abs().rolling(14).mean()
+    period = max(int(cfg.stop_atr_period), 1)
+    out["n_atr20"] = true_range_series(out).rolling(period).mean()
     out["sma50"] = out["close"].rolling(50).mean()
     out["sma100"] = out["close"].rolling(100).mean()
     out["sma200"] = out["close"].rolling(200).mean()
     out["sma50_slope20"] = out["sma50"] - out["sma50"].shift(20)
     out["sma200_slope20"] = out["sma200"] - out["sma200"].shift(20)
-    out["prior_high"] = out["close"].rolling(cfg.lookback).max().shift(1)
+    ref_vol = out["vol20"].rolling(252, min_periods=60).median()
+    lb_narrow = max(int(cfg.adaptive_lookback_min), int(cfg.lookback))
+    lb_wide = min(int(cfg.adaptive_lookback_max), max(lb_narrow + 5, int(cfg.lookback * 1.5)))
+    if cfg.adaptive_lookback_wide:
+        use_wide = (out["vol20"] > ref_vol * 1.05).fillna(False)
+        prior_narrow = out["close"].rolling(lb_narrow).max()
+        prior_wide = out["close"].rolling(lb_wide).max()
+        prior_combo = pd.Series(
+            np.where(use_wide.to_numpy(), prior_wide.to_numpy(), prior_narrow.to_numpy()),
+            index=out.index,
+        )
+        out["prior_high"] = prior_combo.shift(1)
+    else:
+        out["prior_high"] = out["close"].rolling(cfg.lookback).max().shift(1)
+    out["vol20_pctile"] = out["vol20"].rolling(252, min_periods=60).rank(pct=True)
+    if cfg.exit_channel_lookback > 0:
+        lb = int(cfg.exit_channel_lookback)
+        out["exit_channel_level"] = out["low"].rolling(lb).min().shift(1)
     out["breakout_bps"] = 10_000.0 * (out["close"] / out["prior_high"] - 1.0)
-    out["signal"] = out["close"] > out["prior_high"] * (1.0 + cfg.buffer_bps / 10_000.0)
+    hl_range = out["high"] - out["low"]
+    out["close_position"] = np.where(hl_range > 0, (out["close"] - out["low"]) / hl_range, 0.5)
+    out["day_range_pct"] = hl_range / out["close"].replace(0, np.nan)
+    out["avg_range20"] = out["day_range_pct"].rolling(20).mean()
+    wks = max(int(cfg.weekly_sma_weeks), 4)
+    weekly_close = out["close"].resample("W-FRI").last()
+    weekly_sma = weekly_close.rolling(wks).mean()
+    out["weekly_trend_on"] = (weekly_close > weekly_sma).reindex(out.index, method="ffill").fillna(False)
+
+    buf_series = pd.Series(float(cfg.buffer_bps), index=out.index, dtype=float)
+    if cfg.vol_buffer_vol_mult > 0.0:
+        vol_scale = (1.0 + cfg.vol_buffer_vol_mult * (out["vol20"] / ref_vol - 1.0)).clip(0.85, 1.5)
+        buf_series = buf_series * vol_scale
+    level_mult = 1.0 + buf_series / 10_000.0
+    primary = out["close"] > out["prior_high"] * level_mult
+    if cfg.require_two_close_confirm:
+        prev_level = out["prior_high"].shift(1) * level_mult.shift(1)
+        primary &= out["close"].shift(1) > prev_level
     if cfg.max_breakout_bps is not None:
-        out["signal"] &= out["breakout_bps"] <= cfg.max_breakout_bps
+        primary &= out["breakout_bps"] <= cfg.max_breakout_bps
+    if cfg.breakout_min_close_position > 0.0:
+        primary &= out["close_position"] >= cfg.breakout_min_close_position
+    if cfg.breakout_min_range_expansion > 0.0:
+        min_range = cfg.breakout_min_range_expansion * out["avg_range20"]
+        primary &= np.isfinite(min_range) & (out["day_range_pct"] >= min_range)
+    out["signal"] = primary
+    if cfg.backup_entry_lookback > 0:
+        bl = int(cfg.backup_entry_lookback)
+        out["prior_high_backup"] = out["close"].rolling(bl).max().shift(1)
+        backup = out["close"] > out["prior_high_backup"] * (1.0 + cfg.buffer_bps / 10_000.0)
+        if cfg.max_breakout_bps is not None:
+            backup_bps = 10_000.0 * (out["close"] / out["prior_high_backup"] - 1.0)
+            backup &= backup_bps <= cfg.max_breakout_bps
+        out["signal"] = out["signal"] | backup.fillna(False)
     sma200_bull = out["close"] > out["sma200"]
     out["bull"] = sma200_bull
     out["bear"] = out["close"] < out["sma200"]
@@ -457,6 +619,8 @@ def add_indicators(df: pd.DataFrame, cfg: StrategyConfig) -> pd.DataFrame:
         raise ValueError(f"Unsupported trend_mode: {cfg.trend_mode}")
     out["regime_on"] = regime.fillna(False)
     out["signal"] &= out["regime_on"]
+    if cfg.require_weekly_trend:
+        out["signal"] &= out["weekly_trend_on"]
     out["signal"] = out["signal"].fillna(False)
     return out
 
@@ -503,7 +667,15 @@ def simulate_account(
     size_frac = 0.0
     equity_before_entry = equity
     peak_close = 0.0
+    entry_stop_px = 0.0
+    entry_n_atr = 0.0
+    pyramid_units = 0
+    last_add_px = 0.0
     pending_signal_i: int | None = None
+    pending_set_i: int | None = None
+    cooldown_until_i: int = -1
+    extra_hold_days = 0
+    partial_taken = False
     equity_peak = float(sim_cfg.equity)
     entries_paused = False
 
@@ -521,6 +693,17 @@ def simulate_account(
 
         if not in_pos and todays_signal:
             pending_signal_i = todays_signal_i
+            pending_set_i = todays_signal_i
+
+        if (
+            not in_pos
+            and pending_signal_i is not None
+            and strat_cfg.signal_max_pending_days > 0
+            and pending_set_i is not None
+            and (i - pending_set_i) > strat_cfg.signal_max_pending_days
+        ):
+            pending_signal_i = None
+            pending_set_i = None
 
         equity_peak = max(equity_peak, equity)
         if sim_cfg.hwm_pause_pct is not None and sim_cfg.hwm_pause_pct > 0:
@@ -536,15 +719,25 @@ def simulate_account(
             hwm_block = entries_paused
             if veto_block:
                 pending_signal_i = None
-            elif not saturday_block and not hwm_block:
+            elif not saturday_block and not hwm_block and i > cooldown_until_i:
                 signal_i = pending_signal_i
-                rv = float(df["vol20"].iloc[signal_i])
-                todays_size_frac = (
-                    min(strat_cfg.max_alloc, strat_cfg.vol_target / rv) if np.isfinite(rv) and rv > 0 else 0.0
+                signal_close = float(df["close"].iloc[signal_i])
+                gap_pct = 100.0 * abs(float(df["open"].iloc[i]) / signal_close - 1.0)
+                gap_block = (
+                    strat_cfg.max_gap_entry_pct > 0.0 and gap_pct > strat_cfg.max_gap_entry_pct
+                )
+                vol_pct = float(df["vol20_pctile"].iloc[signal_i]) if "vol20_pctile" in df.columns else 1.0
+                meta_block = (
+                    strat_cfg.meta_vol20_max_pctile < 1.0
+                    and np.isfinite(vol_pct)
+                    and vol_pct > strat_cfg.meta_vol20_max_pctile
+                )
+                sizing_base = equity if strat_cfg.compound else fixed_sizing_equity
+                todays_size_frac = 0.0 if gap_block or meta_block else compute_entry_size_frac(
+                    df, i, signal_i, strat_cfg, sizing_base
                 )
                 if todays_size_frac > 0.0:
                     entry_px = float(df["open"].iloc[i])
-                    sizing_base = equity if strat_cfg.compound else fixed_sizing_equity
                     entry_notional = sizing_base * todays_size_frac
                     qty = entry_notional / entry_px
                     entry_fee = entry_notional * fee
@@ -556,47 +749,152 @@ def simulate_account(
                     signal_i_at_entry = signal_i
                     size_frac = todays_size_frac
                     peak_close = float(df["close"].iloc[i])
+                    entry_n_atr = float(df["n_atr20"].iloc[i])
+                    entry_stop_px = entry_hard_stop_px(entry_px, entry_n_atr, strat_cfg)
+                    pyramid_units = 1
+                    last_add_px = entry_px
                     action = "ENTRY"
                     pending_signal_i = None
+                    pending_set_i = None
+                    extra_hold_days = 0
+                    partial_taken = False
+                elif gap_block or meta_block:
+                    pending_signal_i = None
+                    pending_set_i = None
 
         if in_pos:
+            hold_bars = i - entry_i + 1
+            if (
+                strat_cfg.max_pyramid_units > 1
+                and pyramid_units < strat_cfg.max_pyramid_units
+                and hold_bars > 1
+            ):
+                n_p = float(df["n_atr20"].iloc[i])
+                if np.isfinite(n_p) and n_p > 0.0:
+                    trigger_px = last_add_px + strat_cfg.pyramid_n_step * n_p
+                    if float(df["high"].iloc[i - 1]) >= trigger_px:
+                        sizing_base_p = equity if strat_cfg.compound else fixed_sizing_equity
+                        add_frac = compute_entry_size_frac(df, i, i - 1, strat_cfg, sizing_base_p)
+                        if add_frac > 0.0:
+                            add_px = float(df["open"].iloc[i])
+                            add_notional = sizing_base_p * add_frac
+                            add_qty = add_notional / add_px
+                            add_fee = add_notional * fee
+                            equity -= add_fee
+                            day_pnl -= add_fee
+                            entry_fee += add_fee
+                            entry_notional += add_notional
+                            qty += add_qty
+                            entry_px = entry_notional / qty
+                            last_add_px = add_px
+                            pyramid_units += 1
+                            entry_stop_px = max(
+                                entry_stop_px,
+                                entry_hard_stop_px(add_px, n_p, strat_cfg),
+                            )
+                            action = "PYRAMID"
+
             cur_close = float(df["close"].iloc[i])
             atr = float(df["atr14"].iloc[i]) if np.isfinite(df["atr14"].iloc[i]) else 0.0
             peak_close = max(peak_close, cur_close)
-            hold_bars = i - entry_i + 1
-            stop_hit, stop_px = stop_loss_triggered(
-                df,
-                i,
-                entry_px=entry_px,
-                stop_loss_pct=strat_cfg.stop_loss_pct,
-                stop_use_low=strat_cfg.stop_use_low,
+            stop_hit = hard_stop_triggered(
+                df, i, stop_px=entry_stop_px, stop_use_low=strat_cfg.stop_use_low
             )
-            trail_hit = (
+            stop_px = entry_stop_px
+            trail_n_px = 0.0
+            trail_n_hit = False
+            if not stop_hit and strat_cfg.trail_n_mult > 0.0:
+                n_tr = float(df["n_atr20"].iloc[i])
+                if np.isfinite(n_tr) and n_tr > 0.0:
+                    trail_n_px = peak_close - strat_cfg.trail_n_mult * n_tr
+                    trail_n_hit = hard_stop_triggered(
+                        df, i, stop_px=trail_n_px, stop_use_low=strat_cfg.stop_use_low
+                    )
+            trail_atr_hit = (
                 not stop_hit
+                and not trail_n_hit
                 and strat_cfg.trail_atr > 0.0
                 and atr > 0.0
                 and cur_close < peak_close * (1.0 - strat_cfg.trail_atr * atr)
             )
+            trail_hit = trail_n_hit or trail_atr_hit
             hmin = effective_hold_min(strat_cfg)
             hmax = effective_hold_max(strat_cfg)
+            if (
+                strat_cfg.extend_hold_on_new_highs > 0
+                and hold_bars >= hmin
+                and cur_close >= peak_close * (1.0 - 1e-12)
+                and extra_hold_days < strat_cfg.extend_hold_max_extra
+            ):
+                extra_hold_days = min(
+                    extra_hold_days + strat_cfg.extend_hold_on_new_highs,
+                    strat_cfg.extend_hold_max_extra,
+                )
+            hmax_eff = hmax + extra_hold_days
+            channel_hit = (
+                not stop_hit
+                and not trail_hit
+                and strat_cfg.exit_channel_lookback > 0
+                and hold_bars >= hmin
+                and channel_exit_triggered(
+                    df, i, lookback=strat_cfg.exit_channel_lookback, cur_close=cur_close
+                )
+            )
             if uses_dynamic_hold(strat_cfg):
-                faded = momentum_faded(
+                faded = False if strat_cfg.channel_exit_replaces_fade else momentum_faded(
                     df, i, peak_close=peak_close, giveback_pct=strat_cfg.hold_giveback_pct
                 )
-                target_exit = hold_bars >= hmax or (hold_bars >= hmin and faded)
-                exit_reason = (
-                    "max_hold"
-                    if hold_bars >= hmax
-                    else ("momentum_fade" if faded else "")
+                time_exit = hold_bars >= hmax_eff or (
+                    hold_bars >= hmin and (channel_hit or faded)
                 )
+                target_exit = time_exit
+                if hold_bars >= hmax_eff:
+                    exit_reason = "max_hold"
+                elif channel_hit:
+                    exit_reason = "channel_exit"
+                elif faded:
+                    exit_reason = "momentum_fade"
+                else:
+                    exit_reason = ""
             else:
                 target_exit = hold_bars >= strat_cfg.hold_days
                 exit_reason = "fixed_hold" if target_exit else ""
 
+            partial_now = (
+                target_exit
+                and not stop_hit
+                and not trail_hit
+                and exit_reason == "momentum_fade"
+                and strat_cfg.partial_exit_frac > 0.0
+                and strat_cfg.partial_exit_frac < 1.0
+                and not partial_taken
+            )
+            if partial_now:
+                frac = float(strat_cfg.partial_exit_frac)
+                exit_qty = qty * frac
+                exit_px = cur_close
+                exit_notional_part = exit_qty * exit_px
+                exit_fee_part = exit_notional_part * fee
+                gross_part = exit_notional_part - entry_notional * frac
+                net_part = gross_part - exit_fee_part
+                day_pnl += net_part
+                equity += net_part
+                qty *= 1.0 - frac
+                entry_notional *= 1.0 - frac
+                entry_fee *= 1.0 - frac
+                partial_taken = True
+                target_exit = False
+                action = "PARTIAL_EXIT"
+
             if stop_hit or target_exit or trail_hit:
                 signal_close = float(df["close"].iloc[signal_i_at_entry])
                 signal_prior_high = float(df["prior_high"].iloc[signal_i_at_entry])
-                exit_px = stop_px if stop_hit else cur_close
+                if stop_hit:
+                    exit_px = stop_px
+                elif trail_n_hit:
+                    exit_px = trail_n_px
+                else:
+                    exit_px = cur_close
                 exit_notional = qty * exit_px
                 exit_fee = exit_notional * fee
                 gross_pnl = exit_notional - entry_notional
@@ -609,8 +907,10 @@ def simulate_account(
                     "_STOP" if stop_hit else ("_TRAIL" if trail_hit else "")
                 )
                 if stop_hit:
-                    exit_reason = "stop_loss"
-                elif trail_hit:
+                    exit_reason = stop_exit_reason(entry_px, entry_n_atr, stop_px, strat_cfg)
+                elif trail_n_hit:
+                    exit_reason = "trail_n"
+                elif trail_atr_hit:
                     exit_reason = "trail"
 
                 trades.append(
@@ -640,15 +940,21 @@ def simulate_account(
                         "net_ret_on_equity": net_pnl / equity_before_entry if equity_before_entry else 0.0,
                         "equity_after": equity,
                         "trail_stop": trail_hit,
+                        "pyramid_units": pyramid_units,
                     }
                 )
                 in_pos = False
+                pyramid_units = 0
+                extra_hold_days = 0
+                partial_taken = False
+                if stop_hit and strat_cfg.post_stop_cooldown_days > 0:
+                    cooldown_until_i = i + int(strat_cfg.post_stop_cooldown_days)
 
         pending_size_frac = 0.0
         if pending_signal_i is not None and not in_pos:
-            rv_p = float(df["vol20"].iloc[pending_signal_i])
-            pending_size_frac = (
-                min(strat_cfg.max_alloc, strat_cfg.vol_target / rv_p) if np.isfinite(rv_p) and rv_p > 0 else 0.0
+            sizing_base_pend = equity if strat_cfg.compound else fixed_sizing_equity
+            pending_size_frac = compute_entry_size_frac(
+                df, i, pending_signal_i, strat_cfg, sizing_base_pend
             )
 
         curve.append(
@@ -935,9 +1241,14 @@ def print_report(
         print(f"  Filter: breakout size <= {strat_cfg.max_breakout_bps:.0f}bps")
     print(f"  Regime: {strat_cfg.trend_mode}")
     print(f"  Execution: signal at close, enter next open, exit after {strat_cfg.hold_days} trading day(s)")
-    if strat_cfg.stop_loss_pct > 0.0:
+    if strat_cfg.stop_loss_pct > 0.0 or strat_cfg.stop_atr_mult > 0.0:
         low_note = "daily low" if strat_cfg.stop_use_low else "close"
-        print(f"  Stop: {strat_cfg.stop_loss_pct:.1%} below entry ({low_note} trigger, stop fill)")
+        parts = []
+        if strat_cfg.stop_loss_pct > 0.0:
+            parts.append(f"{strat_cfg.stop_loss_pct:.1%} pct")
+        if strat_cfg.stop_atr_mult > 0.0:
+            parts.append(f"{strat_cfg.stop_atr_mult:.1f}×N{strat_cfg.stop_atr_period}")
+        print(f"  Stop: {' + '.join(parts)} ({low_note} trigger, tighter bound wins)")
     if strat_cfg.trail_atr > 0.0:
         print(f"  Trail: close below peak close - {strat_cfg.trail_atr:.1f}x ATR14")
     print(f"  Sizing: min({strat_cfg.max_alloc:.2f}x, {strat_cfg.vol_target:.2%} / 20d daily vol)")

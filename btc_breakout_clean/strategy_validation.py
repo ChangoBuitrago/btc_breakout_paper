@@ -14,6 +14,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 HERE = Path(__file__).resolve().parent
@@ -112,25 +113,80 @@ def portfolio_equity_series(
     return wide.sum(axis=1).sort_index()
 
 
+def sleeve_max_drawdowns(
+    curves: dict[str, pd.DataFrame],
+    initial_equity: dict[str, float],
+) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for sym, curve in curves.items():
+        if curve.empty:
+            out[sym] = float("nan")
+            continue
+        s = curve.set_index(pd.to_datetime(curve["date"], utc=True))["equity"].astype(float)
+        ie = float(initial_equity.get(sym, 0.0))
+        s = s.ffill().fillna(ie)
+        out[sym] = 100.0 * max_drawdown(s)
+    return out
+
+
+def annualized_vol_and_sharpe(equity: pd.Series, periods_per_year: float = 252.0) -> tuple[float, float]:
+    rets = equity.pct_change().dropna()
+    if len(rets) < 2:
+        return float("nan"), float("nan")
+    vol = float(rets.std() * np.sqrt(periods_per_year))
+    if vol <= 0 or not np.isfinite(vol):
+        return vol, float("nan")
+    sharpe = float(rets.mean() / rets.std() * np.sqrt(periods_per_year))
+    return vol, sharpe
+
+
 def portfolio_metrics(
     curves: dict[str, pd.DataFrame],
     trades: pd.DataFrame,
     initial_total: float,
+    *,
+    initial_equity_by_sleeve: dict[str, float] | None = None,
 ) -> dict[str, Any]:
-    port = portfolio_equity_series(curves, {s: float(LIVE_STRATEGY_PARAMS[s]["equity"]) for s in curves})
+    sleeve_eq = initial_equity_by_sleeve or {
+        s: float(LIVE_STRATEGY_PARAMS[s]["equity"]) for s in curves
+    }
+    port = portfolio_equity_series(curves, sleeve_eq)
     if port.empty:
-        return {"return_pct": 0.0, "max_drawdown_pct": float("nan"), "profit_factor": float("nan"), "trades": 0}
+        return {
+            "return_pct": 0.0,
+            "max_drawdown_pct": float("nan"),
+            "profit_factor": float("nan"),
+            "trades": 0,
+            "sharpe_ratio": float("nan"),
+            "annualized_vol_pct": float("nan"),
+            "worst_sleeve_max_drawdown_pct": float("nan"),
+            "worst_sleeve": None,
+            "calmar_ratio": float("nan"),
+        }
     final = float(port.iloc[-1])
     ret = final / initial_total - 1.0
     pnls = pd.to_numeric(trades["net_pnl"], errors="coerce") if not trades.empty else pd.Series(dtype=float)
     pf = profit_factor(pnls) if len(pnls) else float("nan")
+    max_dd = max_drawdown(port)
+    cagr_pct = 100.0 * cagr(ret, port.index[0], port.index[-1])
+    ann_vol, sharpe = annualized_vol_and_sharpe(port)
+    sleeve_dd = sleeve_max_drawdowns(curves, sleeve_eq)
+    worst_sym = min(sleeve_dd, key=sleeve_dd.get) if sleeve_dd else None
+    worst_dd = float(sleeve_dd[worst_sym]) if worst_sym else float("nan")
+    calmar = cagr_pct / abs(100.0 * max_dd) if max_dd < 0 else float("nan")
     return {
         "return_pct": 100.0 * ret,
-        "cagr_pct": 100.0 * cagr(ret, port.index[0], port.index[-1]),
-        "max_drawdown_pct": 100.0 * max_drawdown(port),
+        "cagr_pct": cagr_pct,
+        "max_drawdown_pct": 100.0 * max_dd,
         "profit_factor": float(pf) if pd.notna(pf) else float("nan"),
         "trades": int(len(pnls)),
         "final_equity": final,
+        "sharpe_ratio": sharpe,
+        "annualized_vol_pct": 100.0 * ann_vol if np.isfinite(ann_vol) else float("nan"),
+        "worst_sleeve_max_drawdown_pct": worst_dd,
+        "worst_sleeve": worst_sym,
+        "sleeve_max_drawdown_pct": sleeve_dd,
+        "calmar_ratio": calmar,
     }
 
 
@@ -429,17 +485,25 @@ def main() -> None:
         f"{n_blocked_4} blocked entries) ==="
     )
     print(
-        f"  return={baseline['return_pct']:.2f}%  maxDD={baseline['max_drawdown_pct']:.2f}%  "
-        f"PF={baseline['profit_factor']:.3f}  trades={baseline['trades']}"
+        f"  return={baseline['return_pct']:.2f}%  CAGR={baseline['cagr_pct']:.2f}%  "
+        f"bookDD={baseline['max_drawdown_pct']:.2f}%  worstSleeveDD={baseline['worst_sleeve_max_drawdown_pct']:.2f}% "
+        f"({baseline['worst_sleeve']})"
+    )
+    print(
+        f"  PF={baseline['profit_factor']:.3f}  Sharpe={baseline['sharpe_ratio']:.2f}  "
+        f"vol={baseline['annualized_vol_pct']:.2f}%  Calmar={baseline['calmar_ratio']:.2f}  "
+        f"trades={baseline['trades']}"
     )
 
     print("\n=== PER-SLEEVE (full sample) ===")
     for sym in symbols:
         w = per_sleeve[sym]["windows"]["full"]
         ex = per_sleeve[sym]["windows"]["ex_2024"]
+        fs = per_sleeve[sym]["full_summary"]
         print(
             f"  {sym}: trades={w['trades']} ({w['trades_per_year']}/yr)  "
-            f"ret={w['return_pct_on_sleeve']:.1f}%  PF={w['profit_factor']:.2f}  |  "
+            f"ret={w['return_pct_on_sleeve']:.1f}%  PF={w['profit_factor']:.2f}  "
+            f"sleeveDD={fs['max_drawdown_pct']:.1f}%  |  "
             f"ex-2024: trades={ex['trades']} PF={ex['profit_factor']:.2f} pnl=${ex['net_pnl']:,.0f}"
         )
 
@@ -447,8 +511,9 @@ def main() -> None:
     for row in overlay_rows:
         m = row["metrics"]
         print(
-            f"  {row['label']}: ret={m['return_pct']:.2f}% DD={m['max_drawdown_pct']:.2f}% "
-            f"PF={m['profit_factor']:.3f} passes={row['passes_baseline']}"
+            f"  {row['label']}: ret={m['return_pct']:.2f}% bookDD={m['max_drawdown_pct']:.2f}% "
+            f"worstSleeve={m['worst_sleeve_max_drawdown_pct']:.2f}% PF={m['profit_factor']:.3f} "
+            f"Sharpe={m['sharpe_ratio']:.2f} passes={row['passes_baseline']}"
         )
 
     print(f"\nFull JSON: {OUT_PATH}")
