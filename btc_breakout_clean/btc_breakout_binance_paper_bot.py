@@ -264,6 +264,11 @@ def live_strategy_config(symbol: str = "BTCUSD") -> StrategyConfig:
         extend_hold_max_extra=int(params.get("extend_hold_max_extra", 10)),
         partial_exit_frac=float(params.get("partial_exit_frac", 0.0)),
         meta_vol20_max_pctile=float(params.get("meta_vol20_max_pctile", 1.0)),
+        tiered_sizing_by_breakout=bool(params.get("tiered_sizing_by_breakout", False)),
+        tiered_sizing_max_mult=float(params.get("tiered_sizing_max_mult", 1.5)),
+        momentum_fade_use_giveback=bool(params.get("momentum_fade_use_giveback", True)),
+        momentum_fade_use_sma50=bool(params.get("momentum_fade_use_sma50", True)),
+        momentum_fade_use_sma50_slope=bool(params.get("momentum_fade_use_sma50_slope", True)),
     )
 
 

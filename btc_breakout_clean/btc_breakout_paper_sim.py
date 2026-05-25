@@ -164,6 +164,13 @@ class StrategyConfig:
     partial_exit_frac: float = 0.0
     # OOB: skip entry when vol20 above this rolling percentile (1.0 = off).
     meta_vol20_max_pctile: float = 1.0
+    # Research: scale vol sizing by breakout strength (bps/buffer), capped at tiered_sizing_max_mult.
+    tiered_sizing_by_breakout: bool = False
+    tiered_sizing_max_mult: float = 1.5
+    # Momentum-fade exit components (dynamic hold); all True = live default.
+    momentum_fade_use_giveback: bool = True
+    momentum_fade_use_sma50: bool = True
+    momentum_fade_use_sma50_slope: bool = True
 
 
 def effective_hold_min(cfg: StrategyConfig) -> int:
@@ -186,17 +193,22 @@ def momentum_faded(
     *,
     peak_close: float,
     giveback_pct: float,
+    use_giveback: bool = True,
+    use_sma50: bool = True,
+    use_sma50_slope: bool = True,
 ) -> bool:
     """True when open-trade momentum has weakened (evaluated at bar i close)."""
     cur = float(df["close"].iloc[i])
-    if peak_close > 0 and cur <= peak_close * (1.0 - giveback_pct):
+    if use_giveback and peak_close > 0 and cur <= peak_close * (1.0 - giveback_pct):
         return True
-    sma50 = float(df["sma50"].iloc[i])
-    if np.isfinite(sma50) and cur < sma50:
-        return True
-    slope = float(df["sma50_slope20"].iloc[i])
-    if np.isfinite(slope) and slope < 0:
-        return True
+    if use_sma50:
+        sma50 = float(df["sma50"].iloc[i])
+        if np.isfinite(sma50) and cur < sma50:
+            return True
+    if use_sma50_slope:
+        slope = float(df["sma50_slope20"].iloc[i])
+        if np.isfinite(slope) and slope < 0:
+            return True
     return False
 
 
@@ -222,7 +234,13 @@ def compute_entry_size_frac(
     rv = float(df["vol20"].iloc[signal_i])
     if not np.isfinite(rv) or rv <= 0.0:
         return 0.0
-    return min(strat_cfg.max_alloc, strat_cfg.vol_target / rv)
+    frac = min(strat_cfg.max_alloc, strat_cfg.vol_target / rv)
+    if strat_cfg.tiered_sizing_by_breakout and strat_cfg.buffer_bps > 0.0:
+        bps = float(df["breakout_bps"].iloc[signal_i])
+        if np.isfinite(bps) and bps > 0.0:
+            mult = min(float(strat_cfg.tiered_sizing_max_mult), max(1.0, bps / strat_cfg.buffer_bps))
+            frac = min(strat_cfg.max_alloc, frac * mult)
+    return frac
 
 
 def channel_exit_triggered(df: pd.DataFrame, i: int, *, lookback: int, cur_close: float) -> bool:
@@ -303,11 +321,22 @@ class SimConfig:
     skip_saturday_entry: bool = False
     hwm_pause_pct: float | None = None
     blocked_entry_dates: frozenset[pd.Timestamp] = frozenset()
+    # Research: TWAP-style entry slippage = max(min_bps, vol_mult × vol20). 0 = off (live default).
+    entry_slippage_min_bps: float = 0.0
+    entry_slippage_vol_mult: float = 0.0
 
 
 def default_skip_saturday_entry(source: str) -> bool:
     """Dukascopy daily bars include Saturday; align with Pine skip_sat_entry."""
     return source == "dukascopy"
+
+
+def apply_entry_slippage(open_px: float, vol20: float, sim_cfg: SimConfig) -> float:
+    """Research hook: worse long entry at open (TWAP proxy). Defaults preserve live fills."""
+    if sim_cfg.entry_slippage_min_bps <= 0.0 and sim_cfg.entry_slippage_vol_mult <= 0.0:
+        return open_px
+    slip = max(sim_cfg.entry_slippage_min_bps / 10_000.0, sim_cfg.entry_slippage_vol_mult * vol20)
+    return open_px * (1.0 + slip)
 
 
 def normalize_ohlc(df: pd.DataFrame) -> pd.DataFrame:
@@ -737,7 +766,9 @@ def simulate_account(
                     df, i, signal_i, strat_cfg, sizing_base
                 )
                 if todays_size_frac > 0.0:
-                    entry_px = float(df["open"].iloc[i])
+                    raw_open = float(df["open"].iloc[i])
+                    vol20 = float(df["vol20"].iloc[signal_i]) if "vol20" in df.columns else 0.0
+                    entry_px = apply_entry_slippage(raw_open, vol20, sim_cfg)
                     entry_notional = sizing_base * todays_size_frac
                     qty = entry_notional / entry_px
                     entry_fee = entry_notional * fee
@@ -776,7 +807,9 @@ def simulate_account(
                         sizing_base_p = equity if strat_cfg.compound else fixed_sizing_equity
                         add_frac = compute_entry_size_frac(df, i, i - 1, strat_cfg, sizing_base_p)
                         if add_frac > 0.0:
-                            add_px = float(df["open"].iloc[i])
+                            raw_add = float(df["open"].iloc[i])
+                            vol20_p = float(df["vol20"].iloc[i - 1]) if "vol20" in df.columns else 0.0
+                            add_px = apply_entry_slippage(raw_add, vol20_p, sim_cfg)
                             add_notional = sizing_base_p * add_frac
                             add_qty = add_notional / add_px
                             add_fee = add_notional * fee
@@ -842,7 +875,13 @@ def simulate_account(
             )
             if uses_dynamic_hold(strat_cfg):
                 faded = False if strat_cfg.channel_exit_replaces_fade else momentum_faded(
-                    df, i, peak_close=peak_close, giveback_pct=strat_cfg.hold_giveback_pct
+                    df,
+                    i,
+                    peak_close=peak_close,
+                    giveback_pct=strat_cfg.hold_giveback_pct,
+                    use_giveback=strat_cfg.momentum_fade_use_giveback,
+                    use_sma50=strat_cfg.momentum_fade_use_sma50,
+                    use_sma50_slope=strat_cfg.momentum_fade_use_sma50_slope,
                 )
                 time_exit = hold_bars >= hmax_eff or (
                     hold_bars >= hmin and (channel_hit or faded)

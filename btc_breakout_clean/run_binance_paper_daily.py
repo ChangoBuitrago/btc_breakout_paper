@@ -190,7 +190,13 @@ def summarize_open_position(
     entry_i = int(hits.argmax())
     peak_close = float(df.iloc[entry_i : len(df)]["close"].max())
     fade_now = dynamic and hold_day >= hold_min and momentum_faded(
-        df, len(df) - 1, peak_close=peak_close, giveback_pct=strat_cfg.hold_giveback_pct
+        df,
+        len(df) - 1,
+        peak_close=peak_close,
+        giveback_pct=strat_cfg.hold_giveback_pct,
+        use_giveback=strat_cfg.momentum_fade_use_giveback,
+        use_sma50=strat_cfg.momentum_fade_use_sma50,
+        use_sma50_slope=strat_cfg.momentum_fade_use_sma50_slope,
     )
     stop_px = 0.0
     stop_dist_pct = None

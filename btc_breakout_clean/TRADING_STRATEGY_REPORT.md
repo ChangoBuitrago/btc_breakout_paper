@@ -2,6 +2,8 @@
 
 This document describes the **trading rules only**: what the system trades, why each piece exists, and how a single position moves from flat → signal → entry → exit. Infrastructure (Telegram, GitHub, file layout) is out of scope.
 
+**Expert review (single file):** [`SIMONA_COMPLETE_DOCUMENTATION.md`](SIMONA_COMPLETE_DOCUMENTATION.md) · Also: [`ALGORITHM_SPECIFICATION.md`](ALGORITHM_SPECIFICATION.md) · [`EXPERT_REVIEW_RESPONSE.md`](EXPERT_REVIEW_RESPONSE.md)
+
 **Source of truth in code:** `btc_breakout_paper_sim.py` (engine), `btc_breakout_binance_paper_bot.py` (live per-sleeve parameters).
 
 ---
@@ -389,7 +391,29 @@ Tested in `strategy_validation.py` against the same baseline. **Neither overlay 
 
 ---
 
-## 17. Pro benchmark comparison (PF / DD / Sharpe)
+## 17. Open-source framework comparison (Freqtrade / LEAN proxies)
+
+Script: `oss_framework_comparison.py`  
+Templates: `oss_reference_sim.py`  
+Output: `oss_framework_comparison_results.json` (gitignored)
+
+Same **8 sleeves, 2018+, fees, vol sizing (1.5% / 75% cap), max 4 concurrent**. OSS rows are **long-only template proxies** on identical daily bars — not live Freqtrade/LEAN installs.
+
+| Strategy | Return | Book DD | PF | Sharpe | Trades |
+|----------|--------|---------|-----|--------|--------|
+| **Simona live** | **105.2%** | **−1.61%** | **3.58** | **1.66** | 250 |
+| Turtle S1 | 67.4% | −2.75% | 3.36 | 0.97 | 317 |
+| Freqtrade RSI long | 6.4% | −18.66% | 1.08 | 0.13 | 399 |
+| Freqtrade MACD cross | 154.4% | −9.21% | 1.81 | 1.01 | 567 |
+| Freqtrade BB mean rev | −1.2% | −18.89% | 1.01 | 0.01 | 368 |
+| Freqtrade BB upper break | 176.8% | −10.60% | 1.95 | 1.08 | 478 |
+| LEAN SMA 20/50 cross | 136.9% | −13.05% | 2.44 | 0.63 | 156 |
+
+**Interpretation:** Some OSS templates show **higher raw return** but **much deeper book drawdowns** and lower Sharpe than Simona. Community RSI/BB mean-reversion templates are unsuitable on this book. **Do not switch engines for headline return alone** — risk-adjusted book stats favor the current breakout system.
+
+---
+
+## 18. Pro benchmark comparison (PF / DD / Sharpe)
 
 Script: `btc_breakout_clean/pro_benchmark_comparison.py`  
 Output: `pro_benchmark_comparison_results.json` (gitignored)
@@ -498,8 +522,26 @@ Script: `oob_experiments_validation.py` (19 modes + baseline). Engine hooks in `
 
 **Keep live** unless you explicitly accept DD trade-offs for `partial_exit_50` or `gap_skip_2p5` research trials.
 
+### Return / DD / Sharpe frontier (2026-05)
+
+Script: `frontier_validation.py` → `frontier_validation_results.json` (gitignored).
+
+**Grid:** `vol_target` scale {0.75…1.25} × `max_alloc` {50%, 60%, 75%} × `max_concurrent` {2…6} (74 cases) + 12 near-miss combos.
+
+| Result | Detail |
+|--------|--------|
+| **Baseline** | 105.2% ret, −1.61% book DD, Sharpe 1.66, 250 trades |
+| **Pass promotion gate** | **2 only:** `vt1.00_alloc75_max5`, `max5_live_sizing` — +5% return, **same book DD**, Sharpe 1.70, 252 trades |
+| **Shallowest book DD (grid)** | `vt0.75_alloc50_max3` −1.20% but only 63% return |
+| **Best grid Sharpe (fails return)** | `vt0.75_alloc75_max5` Sharpe 1.73, 83% return |
+| **Best combo Sharpe (fails DD)** | `partial_max5` Sharpe **1.84**, 110% ret, −1.96% DD |
+| **Sleep package** (max3 + SOL 10% + partial + gap) | 88.8% ret, −2.13% DD — reject |
+| **`adaptive_lookback_wide`** | Runs; 95.9% ret, −2.02% DD — reject |
+
+**Conclusion:** Live sizing (vt 1.5%, alloc 75%, max **4**) remains the default. **Max 5 concurrent** is the only grid point that beats baseline on all gate metrics with negligible DD change. **`partial_exit_50` + max 5** is the best risk-adjusted combo for a **paper trial** if you accept ~+0.35 pp book DD.
+
 ---
 
-## 18. Summary
+## 19. Summary
 
 You are running a **daily, long-only breakout continuation** system: buy when **yesterday’s close** breaks above the prior **N-day max close** by at least **buffer_bps** but not more than **max_breakout_bps**, only when a **trend regime** is on; enter at **today’s open** with size **inversely proportional to 20-day volatility** (capped at 75% of sleeve equity), with **at most four concurrent sleeves**; exit on **dynamic hold**, **crypto hard stops**, or **max hold**. Eight instruments share the same engine but different **lookback / buffer / hold / regime / stop**; the book is optimized for **robust aggregate stats** rather than maximum backtest return.

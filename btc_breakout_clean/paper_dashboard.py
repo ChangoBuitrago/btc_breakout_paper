@@ -24,6 +24,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 from btc_breakout_binance_paper_bot import (
+    LIVE_MAX_CONCURRENT_ENTRIES,
     LIVE_SLEEVE_EQUITY,
     LIVE_SYMBOLS,
     live_strategy_config,
@@ -922,7 +923,8 @@ def main() -> None:
 
     st.caption(
         f"Updated {pd.Timestamp.utcnow():%Y-%m-%d %H:%M UTC} · "
-        f"{n_blocked} blocked · 2026 view · forecasts cached 1h"
+        f"{len(LIVE_SYMBOLS)} sleeves · max {LIVE_MAX_CONCURRENT_ENTRIES} concurrent (FCFS) · "
+        f"{n_blocked} cap-blocked in forecast · 2026 view · forecasts cached 1h"
     )
 
 

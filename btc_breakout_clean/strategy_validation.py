@@ -140,6 +140,36 @@ def annualized_vol_and_sharpe(equity: pd.Series, periods_per_year: float = 252.0
     return vol, sharpe
 
 
+def book_utilization_summary(
+    curves: dict[str, pd.DataFrame],
+    trades: pd.DataFrame,
+    initial_equity_by_sleeve: dict[str, float],
+) -> dict[str, float]:
+    """Deployed capital vs book equity (report in every validation run)."""
+    if trades.empty:
+        return {}
+    t = trades.copy()
+    t["entry_date"] = pd.to_datetime(t["entry_date"], utc=True)
+    t["exit_date"] = pd.to_datetime(t["exit_date"], utc=True)
+    port = portfolio_equity_series(curves, initial_equity_by_sleeve)
+    if port.empty:
+        return {}
+    deployed = pd.Series(0.0, index=port.index)
+    open_n = pd.Series(0.0, index=port.index)
+    for row in t.itertuples(index=False):
+        mask = (deployed.index >= row.entry_date) & (deployed.index <= row.exit_date)
+        deployed.loc[mask] += float(row.entry_notional)
+        open_n.loc[mask] += 1.0
+    util = deployed / port.replace(0, np.nan)
+    active = open_n > 0
+    return {
+        "mean_utilization_pct": round(100.0 * float(util.mean()), 2),
+        "max_utilization_pct": round(100.0 * float(util.max()), 2),
+        "mean_concurrent_sleeves": round(float(open_n[active].mean()), 2) if active.any() else 0.0,
+        "pct_days_in_market": round(100.0 * float((deployed > 0).mean()), 1),
+    }
+
+
 def portfolio_metrics(
     curves: dict[str, pd.DataFrame],
     trades: pd.DataFrame,
@@ -208,10 +238,12 @@ def drawdown_recovery_days(equity: pd.Series) -> int | None:
 def blocked_entries_max_concurrent(
     all_trades: pd.DataFrame,
     max_concurrent: int,
+    symbols: tuple[str, ...] | None = None,
 ) -> dict[str, frozenset[pd.Timestamp]]:
-    blocked_by_sym: dict[str, set[pd.Timestamp]] = {s: set() for s in LIVE_SYMBOLS}
+    syms = symbols or tuple(LIVE_SYMBOLS)
+    blocked_by_sym: dict[str, set[pd.Timestamp]] = {s: set() for s in syms}
     if all_trades.empty:
-        return {s: frozenset() for s in LIVE_SYMBOLS}
+        return {s: frozenset() for s in syms}
     t = all_trades.copy()
     t["entry_date"] = pd.to_datetime(t["entry_date"], utc=True)
     t["exit_date"] = pd.to_datetime(t["exit_date"], utc=True)
@@ -226,7 +258,7 @@ def blocked_entries_max_concurrent(
             blocked_by_sym.setdefault(sym, set()).add(entry)
         else:
             active.append(exit_)
-    return {sym: frozenset(blocked_by_sym.get(sym, set())) for sym in LIVE_SYMBOLS}
+    return {sym: frozenset(blocked_by_sym.get(sym, set())) for sym in syms}
 
 
 def trades_in_window(trades: pd.DataFrame, start: pd.Timestamp | None, end: pd.Timestamp | None) -> pd.DataFrame:
@@ -284,10 +316,12 @@ def run_full_book(
     symbols: tuple[str, ...],
     strategies: dict[str, StrategyConfig],
     sim_overrides_by_symbol: dict[str, dict[str, Any]] | None = None,
+    *,
+    equities_by_symbol: dict[str, float] | None = None,
 ) -> tuple[dict[str, pd.DataFrame], dict[str, pd.DataFrame], pd.DataFrame, dict[str, float]]:
     curves: dict[str, pd.DataFrame] = {}
     trade_parts: list[pd.DataFrame] = []
-    equities = {s: live_symbol_equity(s, 10_000.0) for s in symbols}
+    equities = equities_by_symbol or {s: live_symbol_equity(s, 10_000.0) for s in symbols}
     overrides = sim_overrides_by_symbol or {}
     for sym in symbols:
         tr, cu, _ = run_sleeve(
@@ -311,13 +345,17 @@ def sim_overrides_for_max_concurrent(
     symbols: tuple[str, ...],
     strategies: dict[str, StrategyConfig],
     max_concurrent: int,
+    *,
+    equities_by_symbol: dict[str, float] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Pass-1 uncapped replay → blocked entry dates for a portfolio concurrent cap."""
     if max_concurrent <= 0 or len(symbols) <= 1:
         return {}
-    _, _, base_trades, _ = run_full_book(raw_cache, symbols, strategies)
-    blocked = blocked_entries_max_concurrent(base_trades, max_concurrent)
-    return {sym: {"blocked_entry_dates": blocked[sym]} for sym in symbols}
+    _, _, base_trades, _ = run_full_book(
+        raw_cache, symbols, strategies, equities_by_symbol=equities_by_symbol
+    )
+    blocked = blocked_entries_max_concurrent(base_trades, max_concurrent, symbols)
+    return {sym: {"blocked_entry_dates": blocked.get(sym, frozenset())} for sym in symbols}
 
 
 def merge_sim_overrides(
@@ -345,15 +383,20 @@ def run_full_book_live(
     sim_overrides_by_symbol: dict[str, dict[str, Any]] | None = None,
     *,
     max_concurrent: int | None = None,
+    equities_by_symbol: dict[str, float] | None = None,
 ) -> tuple[dict[str, pd.DataFrame], dict[str, pd.DataFrame], pd.DataFrame, dict[str, float]]:
     """Full book replay matching live: per-symbol stops + max concurrent entries (default 4)."""
     cap = LIVE_MAX_CONCURRENT_ENTRIES if max_concurrent is None else max_concurrent
     overrides = merge_sim_overrides(
         sim_overrides_by_symbol,
-        sim_overrides_for_max_concurrent(raw_cache, symbols, strategies, cap),
+        sim_overrides_for_max_concurrent(
+            raw_cache, symbols, strategies, cap, equities_by_symbol=equities_by_symbol
+        ),
         symbols,
     )
-    return run_full_book(raw_cache, symbols, strategies, overrides)
+    return run_full_book(
+        raw_cache, symbols, strategies, overrides, equities_by_symbol=equities_by_symbol
+    )
 
 
 def main() -> None:
@@ -464,10 +507,13 @@ def main() -> None:
             "pnl_skip_off": float(tr_off["net_pnl"].sum()) if not tr_off.empty else 0.0,
         }
 
+    utilization = book_utilization_summary(curves, all_trades, equities)
+
     report = {
         "generated_at": pd.Timestamp.utcnow().isoformat(),
         "live_max_concurrent_entries": LIVE_MAX_CONCURRENT_ENTRIES,
         "blocked_entry_events_max_4": n_blocked_4,
+        "book_utilization": utilization,
         "baseline_portfolio": baseline,
         "per_sleeve": per_sleeve,
         "xau_regime_compare": {
@@ -484,11 +530,18 @@ def main() -> None:
         f"\n=== BASELINE PORTFOLIO ({len(symbols)} sleeves, max {LIVE_MAX_CONCURRENT_ENTRIES} concurrent, "
         f"{n_blocked_4} blocked entries) ==="
     )
+    util = utilization or {}
     print(
         f"  return={baseline['return_pct']:.2f}%  CAGR={baseline['cagr_pct']:.2f}%  "
         f"bookDD={baseline['max_drawdown_pct']:.2f}%  worstSleeveDD={baseline['worst_sleeve_max_drawdown_pct']:.2f}% "
         f"({baseline['worst_sleeve']})"
     )
+    if util:
+        print(
+            f"  utilization: mean={util.get('mean_utilization_pct', 0):.1f}% of book  "
+            f"meanConcurrent={util.get('mean_concurrent_sleeves', 0):.2f}  "
+            f"daysInMarket={util.get('pct_days_in_market', 0):.1f}%"
+        )
     print(
         f"  PF={baseline['profit_factor']:.3f}  Sharpe={baseline['sharpe_ratio']:.2f}  "
         f"vol={baseline['annualized_vol_pct']:.2f}%  Calmar={baseline['calmar_ratio']:.2f}  "
