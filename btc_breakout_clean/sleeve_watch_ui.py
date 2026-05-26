@@ -9,10 +9,8 @@ import pandas as pd
 import streamlit as st
 
 from btc_breakout_binance_paper_bot import LIVE_SYMBOLS, LIVE_SLEEVE_EQUITY
-from run_binance_paper_daily import signal_status, summarize_open_position
-from signal_forecast import load_daily_bars
-from btc_breakout_paper_sim import add_indicators
-from sleeve_flow import append_journal, audit_sleeve, book_snapshot, load_journal
+from run_binance_paper_daily import signal_status
+from sleeve_flow import append_journal, audit_sleeve, book_snapshot, load_journal, sleeve_brief_state
 
 
 def _step_icon(passed: bool) -> str:
@@ -45,6 +43,33 @@ def render_sleeve_watch_tab(
     c4.metric("Enter soon", pending_txt[:24] + ("…" if len(pending_txt) > 24 else ""))
 
     sym_map = {r["symbol"]: r for r in results}
+    missing = [s for s in LIVE_SYMBOLS if s not in sym_map]
+    if missing:
+        st.warning(f"No saved state for: {', '.join(missing)} — run daily bot or ↻ full replay.")
+
+    st.markdown("#### All sleeves")
+    row_a, row_b = st.columns(4), st.columns(4)
+    for i, sym in enumerate(LIVE_SYMBOLS):
+        col = (row_a if i < 4 else row_b)[i % 4]
+        r = sym_map.get(sym)
+        with col:
+            if not r:
+                st.metric(sym, "—", help="missing")
+                continue
+            latest = r.get("latest") or {}
+            blocked = blocked_by_sym.get(sym.upper(), frozenset())
+            brief = sleeve_brief_state(
+                latest=latest,
+                strat_cfg=r["strat_cfg"],
+                pending_entry=r.get("pending_entry"),
+                open_position=r.get("open_position"),
+                blocked_dates=blocked,
+            )
+            sig = "SIG" if latest.get("signal") else "—"
+            bps = latest.get("breakout_bps")
+            bps_txt = f"{bps:.0f}bp" if bps is not None else ""
+            st.metric(sym, brief[:22], delta=f"{sig} {bps_txt}".strip() or None)
+
     default_ix = 0
     for i, s in enumerate(LIVE_SYMBOLS):
         if sym_map.get(s, {}).get("pending_entry") or sym_map.get(s, {}).get("open_position"):
@@ -84,15 +109,6 @@ def _render_watch_body(
     latest = r.get("latest") or {}
     pending = r.get("pending_entry")
     open_pos = r.get("open_position")
-
-    # Enrich position detail from OHLC when possible
-    try:
-        raw = load_daily_bars(symbol)
-        df = add_indicators(raw, strat_cfg)
-        open_pos = summarize_open_position(r.get("curve", pd.DataFrame()), df, strat_cfg) or open_pos
-        pending = r.get("pending_entry")
-    except Exception:
-        df = None
 
     blocked = blocked_by_sym.get(symbol.upper(), frozenset())
     audit = audit_sleeve(

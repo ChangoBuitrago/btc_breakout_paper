@@ -222,7 +222,27 @@ def load_all(refresh_cache: bool, *, full_replay: bool = False) -> list[dict[str
     out: list[dict[str, Any]] = []
     for i, sym in enumerate(LIVE_SYMBOLS):
         bar.progress((i + 1) / n, text=f"Loading {sym} ({i + 1}/{n}, {mode})…")
-        out.append(load_symbol(sym, refresh_cache, full_replay=full_replay))
+        try:
+            out.append(load_symbol(sym, refresh_cache, full_replay=full_replay))
+        except Exception as exc:
+            out.append(
+                {
+                    "symbol": sym.upper(),
+                    "event": "ERROR",
+                    "summary": {},
+                    "latest": {},
+                    "year_summary": {"pnl": 0.0},
+                    "state_path": HERE / "paper_portfolio" / sym.upper() / "state.json",
+                    "equity": live_symbol_equity(sym, LIVE_SLEEVE_EQUITY),
+                    "strat_cfg": live_strategy_config(sym),
+                    "open_position": None,
+                    "pending_entry": None,
+                    "curve": pd.DataFrame(),
+                    "trades": pd.DataFrame(),
+                    "from_disk": False,
+                    "load_error": str(exc),
+                }
+            )
     bar.empty()
     return out
 

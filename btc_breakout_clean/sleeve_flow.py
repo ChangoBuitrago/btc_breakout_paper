@@ -117,17 +117,34 @@ def fetch_binance_intraday_daily(pair: str) -> dict[str, float] | None:
     return None
 
 
+def _row_from_latest(latest: dict[str, Any]) -> pd.Series:
+    """Official close row from daily bot state (no market replay)."""
+    return pd.Series(
+        {
+            "close": latest.get("close"),
+            "prior_high": latest.get("prior_high"),
+            "breakout_bps": latest.get("breakout_bps"),
+            "regime_on": latest.get("regime_on", latest.get("bull")),
+            "bull": latest.get("bull"),
+            "signal": latest.get("signal"),
+            "sma200": latest.get("sma200"),
+            "vol20": latest.get("vol20"),
+        }
+    )
+
+
 def build_provisional_df(symbol: str, strat_cfg: StrategyConfig) -> tuple[pd.DataFrame, str]:
     """Append/update today's bar with live Binance 1d kline (crypto only)."""
     sym = symbol.upper()
-    raw = load_daily_bars(sym)
+    if sym not in LIVE_CRYPTO_SYMBOLS and sym != "BTCUSD":
+        return pd.DataFrame(), "provisional: official daily feed only (not Binance)"
+
+    pair = BINANCE_PAIR.get(sym, sym if sym.endswith("USDT") else None)
+    if not pair:
+        return pd.DataFrame(), "provisional: no Binance pair"
+    raw = load_daily_bars(pair)
     if raw.empty:
         return raw, "no data"
-
-    if sym not in LIVE_CRYPTO_SYMBOLS and sym != "BTCUSD":
-        return raw, "provisional: official daily feed only (not Binance)"
-
-    pair = BINANCE_PAIR.get(sym, sym)
     live = fetch_binance_intraday_daily(pair)
     if live is None:
         px = fetch_binance_ticker(pair)
@@ -360,9 +377,16 @@ def audit_sleeve(
     include_provisional: bool = True,
 ) -> dict[str, Any]:
     sym = symbol.upper()
-    raw = load_daily_bars(sym)
-    df_official = add_indicators(raw, strat_cfg)
-    row_off = df_official.iloc[-1] if not df_official.empty else pd.Series(dtype=float)
+    official_bar_date = "—"
+    if latest.get("prior_high") is not None:
+        row_off = _row_from_latest(latest)
+        official_bar_date = str(latest.get("signal_date") or "")[:10] or "—"
+    else:
+        raw = load_daily_bars(sym)
+        df_official = add_indicators(raw, strat_cfg)
+        row_off = df_official.iloc[-1] if not df_official.empty else pd.Series(dtype=float)
+        if not df_official.empty:
+            official_bar_date = str(df_official.index[-1].date())
 
     today = pd.Timestamp.now(tz="UTC").normalize()
     tomorrow = today + pd.Timedelta(days=1)
@@ -416,7 +440,7 @@ def audit_sleeve(
         "state": state,
         "data_source": live_symbol_source(sym),
         "tv_chart": TV_CHART_HINT.get(sym, "—"),
-        "official_bar_date": str(df_official.index[-1].date()) if not df_official.empty else "—",
+        "official_bar_date": official_bar_date,
         "steps": steps_off,
         "provisional_note": prov_note,
         "provisional_signal": prov_signal,
@@ -426,6 +450,33 @@ def audit_sleeve(
         "expected_notional": notional,
         "as_of_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
     }
+
+
+def sleeve_brief_state(
+    *,
+    latest: dict[str, Any],
+    strat_cfg: StrategyConfig,
+    pending_entry: dict[str, Any] | None = None,
+    open_position: dict[str, Any] | None = None,
+    blocked_dates: frozenset[pd.Timestamp] | None = None,
+) -> str:
+    """One-line state from saved paper state (no market fetch)."""
+    tomorrow = pd.Timestamp.now(tz="UTC").normalize() + pd.Timedelta(days=1)
+    blocked = blocked_dates or frozenset()
+    blocked_tomorrow = tomorrow in blocked or any(
+        pd.to_datetime(d, utc=True).normalize() == tomorrow for d in blocked
+    )
+    gap = None
+    bps = latest.get("breakout_bps")
+    if bps is not None:
+        gap = max(0.0, float(strat_cfg.buffer_bps) - float(bps))
+    return infer_flow_state(
+        open_position=open_position,
+        pending_entry=pending_entry,
+        latest=latest,
+        blocked_tomorrow=blocked_tomorrow,
+        gap_bps=gap,
+    )
 
 
 def book_snapshot(results: list[dict[str, Any]]) -> dict[str, Any]:
