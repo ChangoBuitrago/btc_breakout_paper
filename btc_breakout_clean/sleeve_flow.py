@@ -368,7 +368,7 @@ def audit_sleeve(
     tomorrow = today + pd.Timedelta(days=1)
     blocked = blocked_dates or frozenset()
     blocked_tomorrow = tomorrow in blocked or any(
-        pd.Timestamp(d, tz="UTC").normalize() == tomorrow for d in blocked
+        pd.to_datetime(d, utc=True).normalize() == tomorrow for d in blocked
     )
 
     steps_off = build_flow_steps(

@@ -37,14 +37,12 @@ from btc_breakout_paper_sim import (
     effective_hold_min,
     uses_dynamic_hold,
 )
-from run_binance_paper_daily import (
+from portfolio_cap_blocks import (
     portfolio_blocked_from_results,
     read_portfolio_cap_blocks,
-    run_symbol,
-    signal_status,
-    summarize_signal_year,
     write_portfolio_cap_blocks,
 )
+from run_binance_paper_daily import run_symbol, signal_status, summarize_signal_year
 from signal_forecast import forecast_display, forecast_for_symbol, forecast_sort_key
 from sleeve_watch_ui import render_sleeve_watch_tab
 
