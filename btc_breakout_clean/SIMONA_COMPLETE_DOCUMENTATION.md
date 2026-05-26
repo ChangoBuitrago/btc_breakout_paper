@@ -17,6 +17,7 @@
 
 **Core hypothesis:** After price consolidates below a rolling ceiling (max **daily close** over prior *N* sessions), a confirmed close breakout above that ceiling—by at least a buffer but not beyond an exhaustion cap—tends to continue for several sessions when a medium-term trend filter is on.
 
+**Validated structural finding (May 2026, §19.11):** Regime-only continuous entry (1648 trades, PF 1.29) confirms the breakout filter selects ~1-in-7 regime-on bars; those bars carry approximately **2.8× higher PF** than regime-on bars in aggregate. **The breakout timing signal is load-bearing, not decorative.**
 | Design choice | Rationale |
 |---------------|-----------|
 | Close-based breakout | Settled close only; intraday wicks through resistance do not fire |
@@ -598,6 +599,29 @@ Research-only replay of expert architectural proposals. **Live baseline unchange
 
 **Verdict:** No live promotion. Synthetic bars **worse** than baseline (venue alignment alone insufficient). TWAP slippage model confirms crypto fill sensitivity. FCFS single-pass **regression-clean**. Breakout-priority cap passes gate in replay but is a **cap-sort policy change** — paper-only A/B if pursued; live stays FCFS.
 
+### 19.11 Feedback / null-hypothesis batch (`feedback_experiments_validation.py`)
+
+Walk-forward windows: **dev** 2018–2020 · **oos_1** 2021–2022 · **sealed** 2023+ · **full** 2018+. Research hooks default off; live unchanged.
+
+| Variant | Full return | DD | PF | Trades | Gate |
+|---------|-------------|-----|-----|--------|------|
+| **Live breakout (baseline)** | **105.2%** | **−1.61%** | **3.58** | **250** | — |
+| Regime-only continuous | 202.3% | −19.7% | 1.29 | 1648 | **fail** |
+| Regime-only edge flip | 3.5% | −5.7% | 1.09 | 211 | **fail** |
+| Capped two-factor sizing | 125.1% | −2.14% | 3.62 | 250 | **fail** |
+| Regime-break exit | 103.0% | −1.61% | 3.55 | 250 | **fail** |
+| Crypto volume &gt;1.2× | 78.4% | −2.3% | — | fewer | **fail** |
+| Partial at +2×vol20 | 76.3% | −2.0% | — | 250 | **fail** |
+| Vol-scaled hold_max | 107.4% | −1.77% | — | 240 | **fail** |
+
+**Primary finding (structural):**
+
+> *Regime-only continuous entry (1648 trades, PF 1.29) confirms the breakout filter selects ~1-in-7 regime-on bars; those bars carry approximately 2.8× higher PF than regime-on bars in aggregate. The breakout timing signal is load-bearing, not decorative.*
+
+(250 live trades ÷ 1648 regime-only ≈ **1-in-7**; book PF 3.58 ÷ 1.29 ≈ **2.8×**.)
+
+**Verdict:** No live promotion. Regime-only **fails** walk-forward discipline (−19.7% DD, PF 1.29). Capped sizing is the only near-miss (+20pp full, OOS +3pp) but fails DD gate. **Research cycle on this universe/rule-set is closed** — see §21.
+
 ## 20. Live configuration stance (May 2026)
 
 | Item | Status |
@@ -615,6 +639,7 @@ Research-only replay of expert architectural proposals. **Live baseline unchange
 | WC / memecoin satellite | **Off live** — see §19.9; paper optional |
 | Synthetic 21:00 / TWAP / cap priority | **Off live** — see §19.10; research only |
 | Idle-cash yield overlay | **Off strategy** — treasury ops; reporting in §19.10 |
+| Feedback / null-hypothesis batch | **Off live** — see §19.11; breakout confirmed load-bearing |
 
 ## 21. Priority action list
 
@@ -632,6 +657,17 @@ Research-only replay of expert architectural proposals. **Live baseline unchange
 | P2 | Paper trial max 5 + partial exit — **done** — see §19.8 (paper only) |
 | P2 | Funding series in sim — **done** — see §19.7 |
 | P1 | Architectural playbook (synthetic, TWAP, cap, yield) — **done** — see §19.10; **all reject live** |
+| P1 | Feedback / null-hypothesis + walk-forward — **done** — see §19.11; **breakout load-bearing** |
+
+### Research cycle closure (May 2026)
+
+The book is at a **documented local optimum** on the current 8-sleeve universe and rule engine. Tested and not promoted: frontier + improvement batch + next batch; hold/timeframe/bar-frequency; slippage/funding; architectural playbook; cap/sizing/exit/data-source variants; **regime-only null hypothesis** with walk-forward discipline.
+
+**Next meaningful work (not more marginal parameter sweeps):**
+
+1. **Live paper track** — `partial_exit_50` + max 5 concurrent (§19.8), running in parallel with live FCFS baseline.
+2. **Conditional re-entry after crypto stop** — only remaining mechanically-grounded idea that does not retune existing parameters (untested).
+3. **Live paper data** — venue mismatch (BTC Dukascopy vs Binance), slippage, and cap-bind behavior at real sample size.
 
 ## 22. Known limitations (complete)
 
@@ -648,6 +684,7 @@ Research-only replay of expert architectural proposals. **Live baseline unchange
 11. **Regime-filter sit-out (forward):** Low activity in bears (e.g. 2022) limits drawdown in replay; a future long flat period while markets recover before signals re-arm is **opportunity-cost risk**, not captured as backtest loss.  
 12. **Calendar-year PnL:** Entry-year attribution; year-end straddles are minor at 5–15d holds but may nudge **2025 / 2026 YTD** slightly.  
 13. **Daily bar assumption:** Breakout edge validated on **1d bars only**; intraday raw signal is stronger but execution rules (fade, stops, vol sizing) fail on 1h/4h; slower bars (2d–1w) weaken signal definition.
+14. **Research saturation:** Parameter and structural variants on this universe are **exhausted** for promotion purposes (§19.11, §21). Further replay-only tweaks are unlikely to beat live without new data or a new mechanism (e.g. stop re-entry).
 
 ---
 
@@ -678,6 +715,7 @@ python3 btc_breakout_clean/funding_stress_validation.py
 python3 btc_breakout_clean/paper_trial_validation.py
 python3 btc_breakout_clean/world_cup_candidate_validation.py
 python3 btc_breakout_clean/architectural_experiments_validation.py
+python3 btc_breakout_clean/feedback_experiments_validation.py
 
 # Daily paper signals (no orders)
 python3 btc_breakout_clean/run_binance_paper_daily.py

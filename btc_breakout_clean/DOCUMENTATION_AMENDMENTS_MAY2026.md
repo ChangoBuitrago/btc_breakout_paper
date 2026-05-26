@@ -186,4 +186,16 @@ See [`ARCHITECTURAL_REVIEW_RESPONSE_MAY2026.md`](ARCHITECTURAL_REVIEW_RESPONSE_M
 
 ---
 
+## 12. Feedback / null-hypothesis batch (May 2026)
+
+See §19.11 in [`SIMONA_COMPLETE_DOCUMENTATION.md`](SIMONA_COMPLETE_DOCUMENTATION.md).
+
+**Primary finding (permanent):**
+
+> *Regime-only continuous entry (1648 trades, PF 1.29) confirms the breakout filter selects ~1-in-7 regime-on bars; those bars carry approximately 2.8× higher PF than regime-on bars in aggregate. The breakout timing signal is load-bearing, not decorative.*
+
+All feedback variants **fail** live promotion gate or walk-forward discipline. Research cycle on current universe **closed**; next work: paper trial track + conditional stop re-entry (untested).
+
+---
+
 *Amendments applied to `SIMONA_COMPLETE_DOCUMENTATION.md` — May 2026.*
