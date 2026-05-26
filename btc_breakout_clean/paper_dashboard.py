@@ -717,6 +717,7 @@ def main() -> None:
             st.session_state["full_replay"] = True
             load_symbol.clear()
             load_forecast.clear()
+            load_portfolio_cap_blocks.clear()
             st.rerun()
     with title_col:
         st.title("Paper book · 2026+")
@@ -769,7 +770,7 @@ def main() -> None:
 
     with tab_watch:
         with st.spinner("Portfolio cap map (replay)…"):
-            blocked_map = load_portfolio_cap_blocks(refresh_cache)
+            blocked_map = load_portfolio_cap_blocks(full_replay)
         render_sleeve_watch_tab(results, blocked_by_sym=blocked_map)
 
     with tab_forecast:
