@@ -11,6 +11,17 @@
 //   (XCUUSD removed from live book May 2026 — chart preset kept for research)
 //   BRENT   Dukascopy  lb30 buf75  cap225 hold9-15  sma200_95
 // Book: max 4 concurrent entries (FCFS) — not modeled per-chart; see Python replay.
+//
+// TradingView chart symbols (use 1D / daily):
+//   DOGEUSDT  → BINANCE:DOGEUSDT     (spot; live signal feed — NOT Coinbase/DOGEUSD)
+//   ETHUSDT   → BINANCE:ETHUSDT
+//   BNBUSDT   → BINANCE:BNBUSDT
+//   SOLUSDT   → BINANCE:SOLUSDT
+//   BTCUSD    → Dukascopy in bot; TV has no Dukascopy — use OANDA:BTCUSD or BITSTAMP:BTCUSD (approx)
+//   XAUUSD    → OANDA:XAUUSD or TVC:GOLD (Dukascopy in bot)
+//   XAGUSD    → OANDA:XAGUSD or TVC:SILVER
+//   BRENT     → TVC:UKOIL or OANDA:BCOUSD (Dukascopy in bot)
+// DOGE has ~half the trades of BRENT in replay (regime filter + Binance history from Jul 2019).
 // Telegram: header date = SIG (closed bar). IN = next session open. OUT = dynamic hold @ close.
 // Matches Python paper sim including force_exit on the last historical bar when still long.
 indicator("Paper breakout check", shorttitle="PaperSig", overlay=true, max_labels_count=500)
@@ -18,9 +29,14 @@ indicator("Paper breakout check", shorttitle="PaperSig", overlay=true, max_label
 preset_in = input.string("Auto", "Sleeve preset ($12.5k paper)", options=["Auto", "Custom", "BTCUSD", "ETHUSDT", "BNBUSDT", "SOLUSDT", "DOGEUSDT", "XAUUSD", "XAGUSD", "XCUUSD", "BRENT"])
 show_prior_high = input.bool(true, "Plot prior-high level")
 show_trade_bg = input.bool(true, "Shade bars in paper trade")
-mark_days = input.int(120, "Date labels within last N days", minval=14)
-skip_sat_entry = input.bool(true, "Skip Saturday entry (Dukascopy daily)")
+skip_sat_entry = input.bool(true, "Skip Saturday entry (Dukascopy sleeves only)", tooltip="Live bot skips Sat entry for Dukascopy (BTC, metals, oil). Binance crypto trades 24/7 — Sat skip is auto-off for DOGE/ETH/BNB/SOL even if this is on.")
 force_exit_end = input.bool(true, "Force exit at last historical bar (Python sim parity)")
+
+mark_scope = input.string("All history", "Show IN/OUT marks", options=["All history", "Last N days", "Since year"], group="Mark visibility")
+mark_days = input.int(120, "  └ Last N days", minval=14, group="Mark visibility")
+mark_since_year = input.int(2018, "  └ Since year", minval=2010, maxval=2100, group="Mark visibility")
+show_sig_arm = input.bool(false, "Show SIG / ARM marks", group="Mark visibility")
+show_date_labels = input.bool(false, "Date text labels (IN/OUT only; uses label quota)", group="Mark visibility")
 
 lookback_c = input.int(15, "Lookback (Custom)", minval=1)
 buffer_c = input.float(100.0, "Buffer bps (Custom)", step=1)
@@ -53,9 +69,15 @@ hold_max = preset == "Custom" ? hold_max_c : preset == "ETHUSDT" ? 13 : preset =
 dynamic_hold = hold_max > hold_min
 trend_mode = preset == "Custom" ? trend_c : (preset == "XAUUSD" or preset == "DOGEUSDT" or preset == "BRENT" or preset == "SOLUSDT" ? "sma200_95" : "bull_only")
 data_note = preset == "ETHUSDT" or preset == "BNBUSDT" or preset == "DOGEUSDT" or preset == "SOLUSDT" ? "Binance" : preset == "Custom" ? "custom" : "Dukascopy"
+is_binance = data_note == "Binance"
+skip_sat_effective = skip_sat_entry and not is_binance
+tv_symbol_hint = preset == "DOGEUSDT" ? "BINANCE:DOGEUSDT" : preset == "ETHUSDT" ? "BINANCE:ETHUSDT" : preset == "BNBUSDT" ? "BINANCE:BNBUSDT" : preset == "SOLUSDT" ? "BINANCE:SOLUSDT" : preset == "BTCUSD" ? "OANDA:BTCUSD (approx)" : preset == "XAUUSD" ? "OANDA:XAUUSD" : preset == "XAGUSD" ? "OANDA:XAGUSD" : preset == "BRENT" ? "TVC:UKOIL" : "—"
 
 fmt_d() =>
     str.format("{0,date,yyyy-MM-dd}", time)
+
+bar_year = year(time)
+in_mark_scope = mark_scope == "All history" ? true : mark_scope == "Last N days" ? time >= timenow - mark_days * 86400000 : bar_year >= mark_since_year
 
 prior_high = ta.highest(close, lookback)[1]
 breakout_bps = na(prior_high) or prior_high == 0.0 ? na : 10000.0 * (close / prior_high - 1.0)
@@ -93,6 +115,7 @@ var float entry_px = na
 var float peak_close = na
 var bool entry_armed = false
 var string sig_date_txt = na
+var int trade_count = 0
 
 momentum_faded() =>
     close <= peak_close * (1.0 - hold_giveback_pct) or close < sma50 or sma50_slope20 < 0
@@ -102,7 +125,7 @@ if signal and not in_pos
     entry_armed := true
     sig_date_txt := fmt_d()
 
-today_can_enter = not skip_sat_entry or dayofweek(time) != dayofweek.saturday
+today_can_enter = not skip_sat_effective or dayofweek(time) != dayofweek.saturday
 entered = entry_armed and not in_pos and today_can_enter
 exited = false
 force_out = false
@@ -123,6 +146,7 @@ else if in_pos
     if max_out or fade_out or force_out
         in_pos := false
         exited := true
+        trade_count += 1
         hold_count := 0
         entry_px := na
         peak_close := na
@@ -133,25 +157,26 @@ pending_mark = entry_armed and not in_pos and not entered
 
 in_trade_bar = in_pos or exited
 unreal_pct = in_pos and not na(entry_px) and entry_px != 0.0 ? 100.0 * (close / entry_px - 1.0) : na
-in_label_window = time >= timenow - mark_days * 86400000
+show_mark = in_mark_scope
 
 bgcolor(show_trade_bg and in_trade_bar ? color.new(color.teal, 88) : na, title="In trade")
 plot(show_prior_high ? prior_high : na, "Prior high", color=color.new(color.orange, 35), linewidth=1, style=plot.style_stepline)
 
-plotshape(new_signal_mark and in_label_window, title="Signal (close)", style=shape.circle, location=location.belowbar, size=size.tiny, color=color.new(color.gray, 0), text="SIG")
-plotshape(pending_mark and in_label_window, title="Armed (next open)", style=shape.diamond, location=location.belowbar, size=size.tiny, color=color.new(color.yellow, 0), text="ARM")
-plotshape(entered and in_label_window, title="Entry (open)", style=shape.triangleup, location=location.belowbar, size=size.small, color=color.new(color.teal, 0), text="IN")
-plotshape(exited and not force_out and in_label_window, title="Exit (close)", style=shape.triangledown, location=location.abovebar, size=size.small, color=color.new(color.red, 0), text="OUT")
-plotshape(exited and force_out and in_label_window, title="Exit (sim end)", style=shape.triangledown, location=location.abovebar, size=size.small, color=color.new(color.orange, 0), text="OUT*")
+plotshape(show_sig_arm and new_signal_mark and show_mark, title="Signal (close)", style=shape.circle, location=location.belowbar, size=size.tiny, color=color.new(color.gray, 0), text="SIG")
+plotshape(show_sig_arm and pending_mark and show_mark, title="Armed (next open)", style=shape.diamond, location=location.belowbar, size=size.tiny, color=color.new(color.yellow, 0), text="ARM")
+plotshape(entered and show_mark, title="Entry (open)", style=shape.triangleup, location=location.belowbar, size=size.small, color=color.new(color.teal, 0), text="IN")
+plotshape(exited and not force_out and show_mark, title="Exit (close)", style=shape.triangledown, location=location.abovebar, size=size.small, color=color.new(color.red, 0), text="OUT")
+plotshape(exited and force_out and show_mark, title="Exit (sim end)", style=shape.triangledown, location=location.abovebar, size=size.small, color=color.new(color.orange, 0), text="OUT*")
 
-if new_signal_mark and in_label_window
-    label.new(bar_index, low, "SIG " + fmt_d(), style=label.style_label_up, color=color.new(color.gray, 30), textcolor=color.white, size=size.tiny)
-if entered and in_label_window
-    label.new(bar_index, low, "IN " + fmt_d(), style=label.style_label_up, color=color.new(color.teal, 20), textcolor=color.white, size=size.small)
-if exited and not force_out and in_label_window
-    label.new(bar_index, high, "OUT " + fmt_d(), style=label.style_label_down, color=color.new(color.red, 20), textcolor=color.white, size=size.small)
-if exited and force_out and in_label_window
-    label.new(bar_index, high, "OUT* " + fmt_d(), style=label.style_label_down, color=color.new(color.orange, 20), textcolor=color.white, size=size.small)
+if show_date_labels and show_mark
+    if show_sig_arm and new_signal_mark
+        label.new(bar_index, low, "SIG " + fmt_d(), style=label.style_label_up, color=color.new(color.gray, 30), textcolor=color.white, size=size.tiny)
+    if entered
+        label.new(bar_index, low, "IN " + fmt_d(), style=label.style_label_up, color=color.new(color.teal, 20), textcolor=color.white, size=size.small)
+    if exited and not force_out
+        label.new(bar_index, high, "OUT " + fmt_d(), style=label.style_label_down, color=color.new(color.red, 20), textcolor=color.white, size=size.small)
+    if exited and force_out
+        label.new(bar_index, high, "OUT* " + fmt_d(), style=label.style_label_down, color=color.new(color.orange, 20), textcolor=color.white, size=size.small)
 
 var label status = na
 if barstate.islast
@@ -163,7 +188,10 @@ if barstate.islast
     fade_note = in_pos and dynamic_hold and hold_count >= hold_min and momentum_faded() ? " fade→exit" : ""
     status_txt = pending ? "Pending SIG " + sig_txt + " → next open" : in_pos ? "LONG " + hold_label + " " + str.tostring(unreal_pct, "#.##") + "%" + fade_note : "Flat"
     hold_detail = dynamic_hold ? "hold" + str.tostring(hold_min) + "-" + str.tostring(hold_max) + " dyn" : "hold" + str.tostring(hold_min)
+    scope_note = mark_scope == "All history" ? "marks: all history" : mark_scope == "Last N days" ? "marks: last " + str.tostring(mark_days) + "d" : "marks: since " + str.tostring(mark_since_year)
     detail = preset + auto_note + " $12.5k | " + data_note + " | lb" + str.tostring(lookback) + " buf" + str.tostring(buffer_bps, "#") + " " + hold_detail + " " + trend_mode
+    detail += "\nchart: use " + tv_symbol_hint + " · 1D bars"
+    detail += "\n" + scope_note + " | completed trades " + str.tostring(trade_count)
     detail += "\nbar " + fmt_d() + " | SIG date = Telegram closed bar"
     detail += "\nOUT* = force_exit at last hist bar (Python sim)"
     detail += "\nTV OHLC may differ from Dukascopy/Binance bot feed"

@@ -171,6 +171,15 @@ class StrategyConfig:
     momentum_fade_use_giveback: bool = True
     momentum_fade_use_sma50: bool = True
     momentum_fade_use_sma50_slope: bool = True
+    # Research: entry when regime_on (no breakout). Defaults off = live breakout signal.
+    regime_only_entry: bool = False
+    regime_only_edge: bool = False  # if True with regime_only: enter on regime flip up only
+    tiered_sizing_min_mult: float = 1.0
+    flat_sizing_frac: float = 0.0  # if > 0: fixed size_frac (skip vol targeting)
+    regime_break_exit: bool = False  # exit at breakeven/loss when regime turns off
+    entry_min_volume_ratio: float = 0.0  # vs 20d median volume on signal bar (0 = off)
+    partial_exit_vol_mult: float = 0.0  # partial at entry_px × (1 + mult × vol20); 0 = off
+    vol_scaled_hold_max: bool = False  # scale hold_max by ref_vol/vol20 at entry
 
 
 def effective_hold_min(cfg: StrategyConfig) -> int:
@@ -234,11 +243,15 @@ def compute_entry_size_frac(
     rv = float(df["vol20"].iloc[signal_i])
     if not np.isfinite(rv) or rv <= 0.0:
         return 0.0
+    if strat_cfg.flat_sizing_frac > 0.0:
+        return min(strat_cfg.max_alloc, float(strat_cfg.flat_sizing_frac))
     frac = min(strat_cfg.max_alloc, strat_cfg.vol_target / rv)
     if strat_cfg.tiered_sizing_by_breakout and strat_cfg.buffer_bps > 0.0:
         bps = float(df["breakout_bps"].iloc[signal_i])
         if np.isfinite(bps) and bps > 0.0:
-            mult = min(float(strat_cfg.tiered_sizing_max_mult), max(1.0, bps / strat_cfg.buffer_bps))
+            lo = float(strat_cfg.tiered_sizing_min_mult)
+            hi = float(strat_cfg.tiered_sizing_max_mult)
+            mult = min(hi, max(lo, bps / strat_cfg.buffer_bps))
             frac = min(strat_cfg.max_alloc, frac * mult)
     return frac
 
@@ -602,27 +615,6 @@ def add_indicators(df: pd.DataFrame, cfg: StrategyConfig) -> pd.DataFrame:
     if cfg.vol_buffer_vol_mult > 0.0:
         vol_scale = (1.0 + cfg.vol_buffer_vol_mult * (out["vol20"] / ref_vol - 1.0)).clip(0.85, 1.5)
         buf_series = buf_series * vol_scale
-    level_mult = 1.0 + buf_series / 10_000.0
-    primary = out["close"] > out["prior_high"] * level_mult
-    if cfg.require_two_close_confirm:
-        prev_level = out["prior_high"].shift(1) * level_mult.shift(1)
-        primary &= out["close"].shift(1) > prev_level
-    if cfg.max_breakout_bps is not None:
-        primary &= out["breakout_bps"] <= cfg.max_breakout_bps
-    if cfg.breakout_min_close_position > 0.0:
-        primary &= out["close_position"] >= cfg.breakout_min_close_position
-    if cfg.breakout_min_range_expansion > 0.0:
-        min_range = cfg.breakout_min_range_expansion * out["avg_range20"]
-        primary &= np.isfinite(min_range) & (out["day_range_pct"] >= min_range)
-    out["signal"] = primary
-    if cfg.backup_entry_lookback > 0:
-        bl = int(cfg.backup_entry_lookback)
-        out["prior_high_backup"] = out["close"].rolling(bl).max().shift(1)
-        backup = out["close"] > out["prior_high_backup"] * (1.0 + cfg.buffer_bps / 10_000.0)
-        if cfg.max_breakout_bps is not None:
-            backup_bps = 10_000.0 * (out["close"] / out["prior_high_backup"] - 1.0)
-            backup &= backup_bps <= cfg.max_breakout_bps
-        out["signal"] = out["signal"] | backup.fillna(False)
     sma200_bull = out["close"] > out["sma200"]
     out["bull"] = sma200_bull
     out["bear"] = out["close"] < out["sma200"]
@@ -647,7 +639,39 @@ def add_indicators(df: pd.DataFrame, cfg: StrategyConfig) -> pd.DataFrame:
     else:
         raise ValueError(f"Unsupported trend_mode: {cfg.trend_mode}")
     out["regime_on"] = regime.fillna(False)
-    out["signal"] &= out["regime_on"]
+    if cfg.regime_only_entry:
+        regime_prev = out["regime_on"].shift(1).fillna(False)
+        out["signal"] = (
+            (out["regime_on"] & ~regime_prev) if cfg.regime_only_edge else out["regime_on"]
+        )
+    else:
+        level_mult = 1.0 + buf_series / 10_000.0
+        primary = out["close"] > out["prior_high"] * level_mult
+        if cfg.require_two_close_confirm:
+            prev_level = out["prior_high"].shift(1) * level_mult.shift(1)
+            primary &= out["close"].shift(1) > prev_level
+        if cfg.max_breakout_bps is not None:
+            primary &= out["breakout_bps"] <= cfg.max_breakout_bps
+        if cfg.breakout_min_close_position > 0.0:
+            primary &= out["close_position"] >= cfg.breakout_min_close_position
+        if cfg.breakout_min_range_expansion > 0.0:
+            min_range = cfg.breakout_min_range_expansion * out["avg_range20"]
+            primary &= np.isfinite(min_range) & (out["day_range_pct"] >= min_range)
+        out["signal"] = primary
+        if cfg.backup_entry_lookback > 0:
+            bl = int(cfg.backup_entry_lookback)
+            out["prior_high_backup"] = out["close"].rolling(bl).max().shift(1)
+            backup = out["close"] > out["prior_high_backup"] * (1.0 + cfg.buffer_bps / 10_000.0)
+            if cfg.max_breakout_bps is not None:
+                backup_bps = 10_000.0 * (out["close"] / out["prior_high_backup"] - 1.0)
+                backup &= backup_bps <= cfg.max_breakout_bps
+            out["signal"] = out["signal"] | backup.fillna(False)
+        out["signal"] &= out["regime_on"]
+    if cfg.entry_min_volume_ratio > 0.0:
+        if "volume" not in out.columns:
+            out["volume"] = 0.0
+        vol_med = out["volume"].rolling(20, min_periods=5).median()
+        out["signal"] &= out["volume"] >= cfg.entry_min_volume_ratio * vol_med
     if cfg.require_weekly_trend:
         out["signal"] &= out["weekly_trend_on"]
     out["signal"] = out["signal"].fillna(False)
@@ -707,6 +731,8 @@ def simulate_account(
     partial_taken = False
     equity_peak = float(sim_cfg.equity)
     entries_paused = False
+    entry_signal_vol20 = 0.0
+    entry_hold_scale = 1.0
 
     for i in range(1, len(df)):
         entry_date = df.index[i]
@@ -781,6 +807,15 @@ def simulate_account(
                     size_frac = todays_size_frac
                     peak_close = float(df["close"].iloc[i])
                     entry_n_atr = float(df["n_atr20"].iloc[i])
+                    entry_signal_vol20 = vol20
+                    if strat_cfg.vol_scaled_hold_max and "vol20" in df.columns:
+                        ref_v = float(df["vol20"].rolling(252, min_periods=60).median().iloc[signal_i])
+                        if np.isfinite(ref_v) and ref_v > 0.0 and np.isfinite(entry_signal_vol20) and entry_signal_vol20 > 0.0:
+                            entry_hold_scale = float(np.clip(ref_v / entry_signal_vol20, 0.7, 1.4))
+                        else:
+                            entry_hold_scale = 1.0
+                    else:
+                        entry_hold_scale = 1.0
                     entry_stop_px = entry_hard_stop_px(entry_px, entry_n_atr, strat_cfg)
                     pyramid_units = 1
                     last_add_px = entry_px
@@ -852,7 +887,13 @@ def simulate_account(
             )
             trail_hit = trail_n_hit or trail_atr_hit
             hmin = effective_hold_min(strat_cfg)
-            hmax = effective_hold_max(strat_cfg)
+            hmax = int(round(effective_hold_max(strat_cfg) * entry_hold_scale))
+            regime_break = (
+                strat_cfg.regime_break_exit
+                and hold_bars >= 1
+                and not bool(df["regime_on"].iloc[i])
+                and cur_close <= entry_px
+            )
             if (
                 strat_cfg.extend_hold_on_new_highs > 0
                 and hold_bars >= hmin
@@ -900,13 +941,23 @@ def simulate_account(
                 exit_reason = "fixed_hold" if target_exit else ""
 
             partial_now = (
-                target_exit
-                and not stop_hit
-                and not trail_hit
-                and exit_reason == "momentum_fade"
+                not partial_taken
                 and strat_cfg.partial_exit_frac > 0.0
                 and strat_cfg.partial_exit_frac < 1.0
-                and not partial_taken
+                and (
+                    (
+                        target_exit
+                        and not stop_hit
+                        and not trail_hit
+                        and exit_reason == "momentum_fade"
+                    )
+                    or (
+                        strat_cfg.partial_exit_vol_mult > 0.0
+                        and entry_signal_vol20 > 0.0
+                        and cur_close
+                        >= entry_px * (1.0 + strat_cfg.partial_exit_vol_mult * entry_signal_vol20)
+                    )
+                )
             )
             if partial_now:
                 frac = float(strat_cfg.partial_exit_frac)
@@ -925,8 +976,10 @@ def simulate_account(
                 target_exit = False
                 action = "PARTIAL_EXIT"
 
-            if stop_hit or target_exit or trail_hit:
+            if stop_hit or target_exit or trail_hit or regime_break:
                 signal_close = float(df["close"].iloc[signal_i_at_entry])
+                if regime_break and not stop_hit and not trail_hit and not target_exit:
+                    exit_reason = "regime_break"
                 signal_prior_high = float(df["prior_high"].iloc[signal_i_at_entry])
                 if stop_hit:
                     exit_px = stop_px
