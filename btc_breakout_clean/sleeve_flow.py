@@ -1,0 +1,445 @@
+#!/usr/bin/env python3
+"""
+Sleeve trade-flow auditor — step checklist for manual validation (research / paper).
+
+Mirrors live rules from btc_breakout_paper_sim without placing orders.
+"""
+
+from __future__ import annotations
+
+import json
+import urllib.parse
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import pandas as pd
+
+from btc_breakout_binance_paper_bot import (
+    BINANCE_BASE_URL_FALLBACKS,
+    LIVE_CRYPTO_SYMBOLS,
+    LIVE_MAX_CONCURRENT_ENTRIES,
+    LIVE_SLEEVE_EQUITY,
+    LIVE_SYMBOLS,
+    live_strategy_config,
+    live_symbol_source,
+)
+from btc_breakout_paper_sim import StrategyConfig, add_indicators, default_skip_saturday_entry
+from signal_forecast import _regime_margin_bps, load_daily_bars
+
+HERE = Path(__file__).resolve().parent
+
+BINANCE_PAIR = {
+    "BTCUSD": "BTCUSDT",
+    "ETHUSDT": "ETHUSDT",
+    "BNBUSDT": "BNBUSDT",
+    "SOLUSDT": "SOLUSDT",
+    "DOGEUSDT": "DOGEUSDT",
+}
+
+TV_CHART_HINT = {
+    "BTCUSD": "OANDA:BTCUSD (approx) or Dukascopy feed",
+    "ETHUSDT": "BINANCE:ETHUSDT",
+    "BNBUSDT": "BINANCE:BNBUSDT",
+    "SOLUSDT": "BINANCE:SOLUSDT",
+    "DOGEUSDT": "BINANCE:DOGEUSDT",
+    "XAUUSD": "OANDA:XAUUSD",
+    "XAGUSD": "OANDA:XAGUSD",
+    "BRENT": "TVC:UKOIL",
+}
+
+
+def journal_path(symbol: str) -> Path:
+    return HERE / "paper_portfolio" / symbol.upper() / "flow_journal.jsonl"
+
+
+def append_journal(symbol: str, *, event: str, note: str, expected: str = "", actual: str = "") -> None:
+    path = journal_path(symbol)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    row = {
+        "ts_utc": datetime.now(timezone.utc).isoformat(),
+        "event": event,
+        "expected": expected,
+        "actual": actual,
+        "note": note,
+    }
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(row) + "\n")
+
+
+def load_journal(symbol: str, limit: int = 30) -> list[dict[str, Any]]:
+    path = journal_path(symbol)
+    if not path.exists():
+        return []
+    lines = path.read_text(encoding="utf-8").strip().splitlines()
+    out: list[dict[str, Any]] = []
+    for line in lines[-limit:]:
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return list(reversed(out))
+
+
+def fetch_binance_ticker(pair: str) -> float | None:
+    for base in BINANCE_BASE_URL_FALLBACKS:
+        try:
+            url = f"{base.rstrip('/')}/api/v3/ticker/price?{urllib.parse.urlencode({'symbol': pair.upper()})}"
+            with urllib.request.urlopen(url, timeout=10) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            return float(data["price"])
+        except Exception:
+            continue
+    return None
+
+
+def fetch_binance_intraday_daily(pair: str) -> dict[str, float] | None:
+    """Today's developing daily candle from Binance 1d kline."""
+    for base in BINANCE_BASE_URL_FALLBACKS:
+        try:
+            url = f"{base.rstrip('/')}/api/v3/klines?{urllib.parse.urlencode({'symbol': pair.upper(), 'interval': '1d', 'limit': 1})}"
+            with urllib.request.urlopen(url, timeout=10) as resp:
+                chunk = json.loads(resp.read().decode("utf-8"))
+            if not chunk:
+                return None
+            r = chunk[-1]
+            return {
+                "open": float(r[1]),
+                "high": float(r[2]),
+                "low": float(r[3]),
+                "close": float(r[4]),
+                "volume": float(r[5]),
+            }
+        except Exception:
+            continue
+    return None
+
+
+def build_provisional_df(symbol: str, strat_cfg: StrategyConfig) -> tuple[pd.DataFrame, str]:
+    """Append/update today's bar with live Binance 1d kline (crypto only)."""
+    sym = symbol.upper()
+    raw = load_daily_bars(sym)
+    if raw.empty:
+        return raw, "no data"
+
+    if sym not in LIVE_CRYPTO_SYMBOLS and sym != "BTCUSD":
+        return raw, "provisional: official daily feed only (not Binance)"
+
+    pair = BINANCE_PAIR.get(sym, sym)
+    live = fetch_binance_intraday_daily(pair)
+    if live is None:
+        px = fetch_binance_ticker(pair)
+        if px is None:
+            return raw, "provisional: could not fetch Binance price"
+        last = raw.iloc[-1]
+        live = {
+            "open": float(last["open"]),
+            "high": max(float(last["high"]), px),
+            "low": min(float(last["low"]), px),
+            "close": px,
+            "volume": float(last.get("volume", 0.0)),
+        }
+
+    now = pd.Timestamp.now(tz="UTC").normalize()
+    work = raw.copy()
+    if len(work) and work.index[-1].normalize() >= now:
+        work.iloc[-1, work.columns.get_loc("close")] = live["close"]
+        work.iloc[-1, work.columns.get_loc("high")] = live["high"]
+        work.iloc[-1, work.columns.get_loc("low")] = live["low"]
+        if "volume" in work.columns:
+            work.iloc[-1, work.columns.get_loc("volume")] = live["volume"]
+    else:
+        row = pd.DataFrame([live], index=pd.DatetimeIndex([now], tz="UTC"))
+        work = pd.concat([work, row])
+    df = add_indicators(work, strat_cfg)
+    return df, f"provisional: Binance 1d developing bar @ {live['close']:,.4g}"
+
+
+def _step(
+    step_id: str,
+    label: str,
+    *,
+    passed: bool,
+    expected: str,
+    actual: str,
+    detail: str = "",
+) -> dict[str, Any]:
+    return {
+        "id": step_id,
+        "label": label,
+        "pass": passed,
+        "expected": expected,
+        "actual": actual,
+        "detail": detail,
+    }
+
+
+def _raw_breakout_row(row: pd.Series, strat_cfg: StrategyConfig) -> bool:
+    ph = float(row["prior_high"]) if np.isfinite(row.get("prior_high", np.nan)) else np.nan
+    if not np.isfinite(ph) or ph <= 0:
+        return False
+    level = ph * (1.0 + strat_cfg.buffer_bps / 10_000.0)
+    return float(row["close"]) > level
+
+
+def build_flow_steps(
+    row: pd.Series,
+    strat_cfg: StrategyConfig,
+    symbol: str,
+    *,
+    pending_entry: dict[str, Any] | None,
+    open_position: dict[str, Any] | None,
+    blocked_tomorrow: bool,
+    mode: str,
+) -> list[dict[str, Any]]:
+    steps: list[dict[str, Any]] = []
+    regime_on = bool(row.get("regime_on", row.get("bull", False)))
+    bps = float(row["breakout_bps"]) if np.isfinite(row.get("breakout_bps", np.nan)) else None
+    raw_bo = _raw_breakout_row(row, strat_cfg)
+    exhausted = (
+        strat_cfg.max_breakout_bps is not None
+        and bps is not None
+        and bps > float(strat_cfg.max_breakout_bps)
+    )
+    signal = bool(row.get("signal", False))
+    margin = _regime_margin_bps(row, strat_cfg.trend_mode)
+
+    steps.append(
+        _step(
+            "regime",
+            "Regime filter",
+            passed=regime_on,
+            expected=f"{strat_cfg.trend_mode} ON",
+            actual="ON" if regime_on else "OFF",
+            detail=f"margin {margin:+.0f} bps" if margin is not None else "",
+        )
+    )
+    steps.append(
+        _step(
+            "breakout",
+            "Close above prior high + buffer",
+            passed=raw_bo,
+            expected=f"> {strat_cfg.buffer_bps:.0f} bps buffer",
+            actual=f"{bps:.0f} bps" if bps is not None else "n/a",
+            detail=f"need +{max(0.0, strat_cfg.buffer_bps - (bps or 0)):.0f} bps" if bps is not None and not raw_bo else "",
+        )
+    )
+    if strat_cfg.max_breakout_bps is not None:
+        steps.append(
+            _step(
+                "exhaustion",
+                "Exhaustion cap",
+                passed=not exhausted,
+                expected=f"≤ {strat_cfg.max_breakout_bps:.0f} bps",
+                actual=f"{bps:.0f} bps" if bps is not None else "n/a",
+            )
+        )
+    steps.append(
+        _step(
+            "signal",
+            "Combined signal (official close)",
+            passed=signal,
+            expected="ON at daily close" if mode == "official" else "provisional",
+            actual="YES" if signal else "NO",
+        )
+    )
+
+    if open_position:
+        op = open_position
+        steps.append(
+            _step(
+                "position",
+                "In position",
+                passed=True,
+                expected="LONG",
+                actual=f"day {op.get('hold_day')}/{op.get('hold_max', op.get('hold_days'))}",
+                detail=f"unreal {op.get('unrealized_pct', 0):+.1f}%",
+            )
+        )
+        if op.get("momentum_fade"):
+            steps.append(
+                _step(
+                    "fade",
+                    "Momentum fade",
+                    passed=True,
+                    expected="exit next close",
+                    actual="TRIGGERED",
+                )
+            )
+        if op.get("stop_px"):
+            steps.append(
+                _step(
+                    "stop",
+                    "Hard stop (crypto)",
+                    passed=True,
+                    expected=f"floor {op['stop_px']:,.2f}",
+                    actual=f"cushion {op.get('stop_dist_pct', 0):+.1f}%",
+                )
+            )
+    elif pending_entry:
+        pe = pending_entry
+        steps.append(
+            _step(
+                "armed",
+                "SIG armed → next open",
+                passed=pe.get("size_frac", 0) > 0,
+                expected=f"enter ~{100*float(pe.get('size_frac',0)):.0f}% size",
+                actual=f"SIG {pe.get('signal_date')}",
+            )
+        )
+        steps.append(
+            _step(
+                "cap",
+                "Portfolio max-4 cap",
+                passed=not blocked_tomorrow,
+                expected="slot available",
+                actual="BLOCKED tomorrow" if blocked_tomorrow else "OK",
+            )
+        )
+        tomorrow = pd.Timestamp.now(tz="UTC").normalize() + pd.Timedelta(days=1)
+        skip_sat = default_skip_saturday_entry(live_symbol_source(symbol)) and tomorrow.dayofweek == 5
+        steps.append(
+            _step(
+                "saturday",
+                "Saturday entry skip",
+                passed=not skip_sat,
+                expected="no Sat entry (Dukascopy sleeves)" if default_skip_saturday_entry(live_symbol_source(symbol)) else "n/a",
+                actual="BLOCKED Sat" if skip_sat else "OK",
+            )
+        )
+    else:
+        gap = (strat_cfg.buffer_bps - bps) if bps is not None and bps < strat_cfg.buffer_bps else 0.0
+        steps.append(
+            _step(
+                "flat",
+                "Flat — monitoring",
+                passed=not signal,
+                expected="wait for SIG",
+                actual=f"+{gap:.0f} bps to buffer" if gap > 0 else "at/above buffer",
+            )
+        )
+
+    return steps
+
+
+def infer_flow_state(
+    *,
+    open_position: dict[str, Any] | None,
+    pending_entry: dict[str, Any] | None,
+    latest: dict[str, Any],
+    blocked_tomorrow: bool,
+    gap_bps: float | None,
+) -> str:
+    if open_position:
+        if open_position.get("momentum_fade"):
+            return "LONG — exit likely next close"
+        return "LONG"
+    if pending_entry:
+        if float(pending_entry.get("size_frac") or 0) <= 0:
+            return "BLOCKED (size 0)"
+        if blocked_tomorrow:
+            return "ARMED — cap blocks entry"
+        return "ENTER at next open"
+    if latest.get("signal"):
+        return "SIG today (pending arm)"
+    if gap_bps is not None and gap_bps <= 25 and latest.get("regime_on", latest.get("bull")):
+        return "APPROACHING"
+    return "FLAT"
+
+
+def audit_sleeve(
+    symbol: str,
+    *,
+    latest: dict[str, Any],
+    strat_cfg: StrategyConfig,
+    pending_entry: dict[str, Any] | None = None,
+    open_position: dict[str, Any] | None = None,
+    blocked_dates: frozenset[pd.Timestamp] | None = None,
+    include_provisional: bool = True,
+) -> dict[str, Any]:
+    sym = symbol.upper()
+    raw = load_daily_bars(sym)
+    df_official = add_indicators(raw, strat_cfg)
+    row_off = df_official.iloc[-1] if not df_official.empty else pd.Series(dtype=float)
+
+    today = pd.Timestamp.now(tz="UTC").normalize()
+    tomorrow = today + pd.Timedelta(days=1)
+    blocked = blocked_dates or frozenset()
+    blocked_tomorrow = tomorrow in blocked or any(
+        pd.Timestamp(d, tz="UTC").normalize() == tomorrow for d in blocked
+    )
+
+    steps_off = build_flow_steps(
+        row_off,
+        strat_cfg,
+        sym,
+        pending_entry=pending_entry,
+        open_position=open_position,
+        blocked_tomorrow=blocked_tomorrow,
+        mode="official",
+    )
+
+    prov_note = ""
+    prov_signal = None
+    prov_bps = None
+    if include_provisional:
+        df_prov, prov_note = build_provisional_df(sym, strat_cfg)
+        if not df_prov.empty:
+            row_p = df_prov.iloc[-1]
+            prov_signal = bool(row_p.get("signal", False))
+            prov_bps = float(row_p["breakout_bps"]) if np.isfinite(row_p.get("breakout_bps", np.nan)) else None
+
+    gap = None
+    bps = latest.get("breakout_bps")
+    if bps is not None:
+        gap = max(0.0, float(strat_cfg.buffer_bps) - float(bps))
+
+    state = infer_flow_state(
+        open_position=open_position,
+        pending_entry=pending_entry,
+        latest=latest,
+        blocked_tomorrow=blocked_tomorrow,
+        gap_bps=gap,
+    )
+
+    notional = LIVE_SLEEVE_EQUITY * float(
+        (pending_entry or {}).get("size_frac")
+        or (open_position or {}).get("size_frac")
+        or latest.get("next_size_frac")
+        or 0.0
+    )
+
+    return {
+        "symbol": sym,
+        "state": state,
+        "data_source": live_symbol_source(sym),
+        "tv_chart": TV_CHART_HINT.get(sym, "—"),
+        "official_bar_date": str(df_official.index[-1].date()) if not df_official.empty else "—",
+        "steps": steps_off,
+        "provisional_note": prov_note,
+        "provisional_signal": prov_signal,
+        "provisional_breakout_bps": prov_bps,
+        "gap_to_buffer_bps": gap,
+        "blocked_tomorrow": blocked_tomorrow,
+        "expected_notional": notional,
+        "as_of_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+    }
+
+
+def book_snapshot(results: list[dict[str, Any]]) -> dict[str, Any]:
+    in_trade = [r["symbol"] for r in results if r.get("open_position")]
+    pending = [
+        r["symbol"]
+        for r in results
+        if r.get("pending_entry") and float(r["pending_entry"].get("size_frac") or 0) > 0
+    ]
+    return {
+        "max_concurrent": LIVE_MAX_CONCURRENT_ENTRIES,
+        "open_count": len(in_trade),
+        "open_symbols": in_trade,
+        "pending_count": len(pending),
+        "pending_symbols": pending,
+        "slots_free": max(0, LIVE_MAX_CONCURRENT_ENTRIES - len(in_trade)),
+    }

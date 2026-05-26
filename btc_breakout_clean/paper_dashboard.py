@@ -37,8 +37,9 @@ from btc_breakout_paper_sim import (
     effective_hold_min,
     uses_dynamic_hold,
 )
-from run_binance_paper_daily import run_symbol, signal_status, summarize_signal_year
+from run_binance_paper_daily import portfolio_blocked_entry_dates, run_symbol, signal_status, summarize_signal_year
 from signal_forecast import forecast_display, forecast_for_symbol, forecast_sort_key
+from sleeve_watch_ui import render_sleeve_watch_tab
 
 VIEW_START = pd.Timestamp("2026-01-01", tz="UTC")
 MIN_BAR_RET = 0.12  # minimum |return %| so flat sleeves stay visible on chart
@@ -167,6 +168,12 @@ def load_symbol_from_disk(symbol: str) -> dict[str, Any] | None:
         "trades": trades,
         "from_disk": True,
     }
+
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def load_portfolio_cap_blocks(refresh_cache: bool) -> dict[str, frozenset[pd.Timestamp]]:
+    args = _args(refresh_cache=refresh_cache)
+    return portfolio_blocked_entry_dates(args, list(LIVE_SYMBOLS), LIVE_MAX_CONCURRENT_ENTRIES)
 
 
 @st.cache_data(show_spinner=False, ttl=3600)
@@ -746,8 +753,8 @@ def main() -> None:
     m4.metric("In trade", str(n_long))
     m5.metric("Enter soon", str(n_enter + n_pending), help="Signal fired — entry next UTC open")
 
-    tab_overview, tab_forecast, tab_sleeves, tab_trades = st.tabs(
-        ["Overview", "Entry forecast", "Sleeves 2026", "Trades"]
+    tab_overview, tab_watch, tab_forecast, tab_sleeves, tab_trades = st.tabs(
+        ["Overview", "Sleeve watch", "Entry forecast", "Sleeves 2026", "Trades"]
     )
 
     with tab_overview:
@@ -759,6 +766,11 @@ def main() -> None:
         if not chart_stats.empty:
             st.subheader("Sleeve returns since 2026")
             st.altair_chart(ret_bar_chart(chart_stats), width="stretch")
+
+    with tab_watch:
+        with st.spinner("Portfolio cap map (replay)…"):
+            blocked_map = load_portfolio_cap_blocks(refresh_cache)
+        render_sleeve_watch_tab(results, blocked_by_sym=blocked_map)
 
     with tab_forecast:
         load_fc = st.button("Load entry forecasts", type="primary", key="load_forecasts")
