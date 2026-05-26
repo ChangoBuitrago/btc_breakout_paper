@@ -479,6 +479,214 @@ def sleeve_brief_state(
     )
 
 
+_ACTION_PRIORITY = {
+    "EXIT": 0,
+    "ENTER": 1,
+    "ARMED": 2,
+    "CAP_BLOCK": 3,
+    "APPROACH": 4,
+    "FLAT": 5,
+    "MISSING": 6,
+    "ERROR": 7,
+}
+
+
+def _blocked_tomorrow(blocked_dates: frozenset[pd.Timestamp] | None) -> bool:
+    tomorrow = pd.Timestamp.now(tz="UTC").normalize() + pd.Timedelta(days=1)
+    blocked = blocked_dates or frozenset()
+    return tomorrow in blocked or any(pd.to_datetime(d, utc=True).normalize() == tomorrow for d in blocked)
+
+
+def classify_sleeve_action(
+    symbol: str,
+    r: dict[str, Any] | None,
+    *,
+    blocked_dates: frozenset[pd.Timestamp] | None,
+) -> dict[str, Any]:
+    sym = symbol.upper()
+    if r is None:
+        return {
+            "symbol": sym,
+            "action": "MISSING",
+            "priority": _ACTION_PRIORITY["MISSING"],
+            "headline": "No paper state — run daily bot",
+            "detail": "",
+        }
+    if r.get("load_error"):
+        return {
+            "symbol": sym,
+            "action": "ERROR",
+            "priority": _ACTION_PRIORITY["ERROR"],
+            "headline": "Failed to load",
+            "detail": str(r.get("load_error", ""))[:120],
+        }
+
+    latest = r.get("latest") or {}
+    pending = r.get("pending_entry")
+    open_pos = r.get("open_position")
+    strat_cfg = r["strat_cfg"]
+    blocked_tomorrow = _blocked_tomorrow(blocked_dates)
+    state = sleeve_brief_state(
+        latest=latest,
+        strat_cfg=strat_cfg,
+        pending_entry=pending,
+        open_position=open_pos,
+        blocked_dates=blocked_dates,
+    )
+
+    if open_pos and open_pos.get("momentum_fade"):
+        return {
+            "symbol": sym,
+            "action": "EXIT",
+            "priority": _ACTION_PRIORITY["EXIT"],
+            "headline": "Exit likely next close (momentum fade)",
+            "detail": state,
+        }
+    if open_pos:
+        hold = f"{open_pos.get('hold_day')}/{open_pos.get('hold_max', open_pos.get('hold_days'))}"
+        return {
+            "symbol": sym,
+            "action": "EXIT",
+            "priority": _ACTION_PRIORITY["EXIT"] + 0.5,
+            "headline": f"Holding LONG — day {hold}",
+            "detail": state,
+        }
+    if pending and float(pending.get("size_frac") or 0) > 0:
+        sig_d = pending.get("signal_date", "?")
+        if blocked_tomorrow:
+            return {
+                "symbol": sym,
+                "action": "CAP_BLOCK",
+                "priority": _ACTION_PRIORITY["CAP_BLOCK"],
+                "headline": f"SIG {sig_d} — portfolio cap blocks entry",
+                "detail": state,
+            }
+        return {
+            "symbol": sym,
+            "action": "ENTER",
+            "priority": _ACTION_PRIORITY["ENTER"],
+            "headline": f"Enter at next session open (SIG {sig_d})",
+            "detail": state,
+        }
+    if latest.get("signal"):
+        return {
+            "symbol": sym,
+            "action": "ARMED",
+            "priority": _ACTION_PRIORITY["ARMED"],
+            "headline": "Signal today — pending arm",
+            "detail": state,
+        }
+    bps = latest.get("breakout_bps")
+    gap = max(0.0, float(strat_cfg.buffer_bps) - float(bps)) if bps is not None else None
+    if gap is not None and gap <= 25 and latest.get("regime_on", latest.get("bull")):
+        return {
+            "symbol": sym,
+            "action": "APPROACH",
+            "priority": _ACTION_PRIORITY["APPROACH"],
+            "headline": f"Approaching buffer (+{gap:.0f} bps)",
+            "detail": state,
+        }
+    return {
+        "symbol": sym,
+        "action": "FLAT",
+        "priority": _ACTION_PRIORITY["FLAT"],
+        "headline": "Flat — no action",
+        "detail": state,
+    }
+
+
+def build_action_queue(
+    results: list[dict[str, Any]],
+    blocked_by_sym: dict[str, frozenset[pd.Timestamp]],
+) -> list[dict[str, Any]]:
+    sym_map = {r["symbol"]: r for r in results}
+    queue = [
+        classify_sleeve_action(
+            sym,
+            sym_map.get(sym),
+            blocked_dates=blocked_by_sym.get(sym.upper(), frozenset()),
+        )
+        for sym in LIVE_SYMBOLS
+    ]
+    return sorted(queue, key=lambda x: (x["priority"], x["symbol"]))
+
+
+def book_flow_context(book: dict[str, Any], queue: list[dict[str, Any]]) -> dict[str, str]:
+    n_enter = sum(1 for q in queue if q["action"] == "ENTER")
+    n_cap = sum(1 for q in queue if q["action"] == "CAP_BLOCK")
+    n_exit = sum(1 for q in queue if q["action"] == "EXIT" and "fade" in q["headline"].lower())
+    n_hold = sum(1 for q in queue if q["action"] == "EXIT" and "Holding" in q["headline"])
+
+    if n_enter:
+        return {
+            "phase": "ENTRY WINDOW",
+            "instruction": f"{n_enter} sleeve(s) enter at the next session open. Confirm book cap, size, then log fills.",
+        }
+    if n_cap:
+        return {
+            "phase": "CAP BLOCKED",
+            "instruction": f"{n_cap} sleeve(s) have a signal but max-{book['max_concurrent']} cap blocks entry. No orders.",
+        }
+    if n_exit:
+        return {
+            "phase": "EXIT WATCH",
+            "instruction": "Momentum fade triggered — verify exit at next close on affected sleeves.",
+        }
+    if n_hold:
+        return {
+            "phase": "IN TRADE",
+            "instruction": f"{book['open_count']} open — monitor holds and stops; no new entries unless slots free.",
+        }
+    if book["open_count"] >= book["max_concurrent"]:
+        return {
+            "phase": "BOOK FULL",
+            "instruction": "All entry slots used. Scan for exits only.",
+        }
+    return {
+        "phase": "SCAN",
+        "instruction": "No entries today. Scan approaching setups; official SIG only at daily close.",
+    }
+
+
+def enrich_pipeline(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Mark each rule step as done | current (first fail) | pending."""
+    out: list[dict[str, Any]] = []
+    found_current = False
+    for step in steps:
+        row = dict(step)
+        if found_current:
+            row["status"] = "pending"
+        elif not step["pass"] and step["id"] not in ("flat",):
+            row["status"] = "current"
+            found_current = True
+        else:
+            row["status"] = "done"
+        out.append(row)
+    if not found_current and out:
+        out[-1]["status"] = "current"
+    return out
+
+
+def primary_instruction(audit: dict[str, Any], action: dict[str, Any]) -> str:
+    act = action["action"]
+    if act == "ENTER":
+        n = audit.get("expected_notional") or 0
+        return f"Place paper/long order ~${n:,.0f} at next session open. Log fill below when done."
+    if act == "CAP_BLOCK":
+        return "Do not enter — portfolio already at max concurrent positions for this signal date."
+    if act == "EXIT" and "fade" in action["headline"].lower():
+        return "Prepare to exit at next daily close unless fade clears. Log exit when closed."
+    if act == "EXIT":
+        return "Hold — watch hold-day count and hard stop (crypto). Log exit on close."
+    if act == "APPROACH":
+        gap = audit.get("gap_to_buffer_bps")
+        g = f"{gap:.0f} bps" if gap is not None else "—"
+        return f"Not actionable yet — needs +{g} to buffer with regime on."
+    if act == "ARMED":
+        return "Signal fired today; bot should arm entry for next open on next daily run."
+    return "No trade action. Wait for official daily close."
+
+
 def book_snapshot(results: list[dict[str, Any]]) -> dict[str, Any]:
     in_trade = [r["symbol"] for r in results if r.get("open_position")]
     pending = [

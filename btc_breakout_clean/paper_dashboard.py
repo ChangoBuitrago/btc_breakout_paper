@@ -799,7 +799,7 @@ def main() -> None:
     m5.metric("Enter soon", str(n_enter + n_pending), help="Signal fired — entry next UTC open")
 
     tab_overview, tab_watch, tab_forecast, tab_sleeves, tab_trades = st.tabs(
-        ["Overview", "Sleeve watch", "Entry forecast", "Sleeves 2026", "Trades"]
+        ["Overview", "Trade flow", "Entry forecast", "Sleeves 2026", "Trades"]
     )
 
     with tab_overview:

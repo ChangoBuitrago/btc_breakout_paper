@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Streamlit UI for Sleeve Watch (trade-flow auditor tab)."""
+"""Sleeve Watch — guided trade-flow walkthrough (not a metrics dashboard)."""
 
 from __future__ import annotations
 
@@ -9,12 +9,94 @@ import pandas as pd
 import streamlit as st
 
 from btc_breakout_binance_paper_bot import LIVE_SYMBOLS, LIVE_SLEEVE_EQUITY
-from run_binance_paper_daily import signal_status
-from sleeve_flow import append_journal, audit_sleeve, book_snapshot, load_journal, sleeve_brief_state
+from sleeve_flow import (
+    append_journal,
+    audit_sleeve,
+    book_flow_context,
+    book_snapshot,
+    build_action_queue,
+    enrich_pipeline,
+    load_journal,
+    primary_instruction,
+)
 
 
-def _step_icon(passed: bool) -> str:
-    return "✅" if passed else "❌"
+def _inject_flow_styles() -> None:
+    st.markdown(
+        """
+        <style>
+            .flow-hero {
+                background: linear-gradient(135deg, #1a1a24 0%, #12121a 100%);
+                border: 1px solid #3d3520;
+                border-left: 4px solid #e8b84a;
+                border-radius: 10px;
+                padding: 1rem 1.25rem;
+                margin-bottom: 1rem;
+            }
+            .flow-hero h3 {
+                margin: 0 0 0.35rem 0;
+                color: #f4f4f8;
+                font-size: 1.15rem;
+                letter-spacing: 0.04em;
+            }
+            .flow-hero p { margin: 0; color: #b8b8c4; font-size: 0.92rem; line-height: 1.5; }
+            .flow-slots {
+                display: flex; gap: 0.5rem; margin-top: 0.75rem; flex-wrap: wrap;
+            }
+            .flow-slot {
+                width: 2.4rem; height: 2.4rem; border-radius: 6px;
+                border: 1px solid #2a2a34; background: #0e0e12;
+                display: flex; align-items: center; justify-content: center;
+                font-size: 0.7rem; color: #6b7280;
+            }
+            .flow-slot.on {
+                background: #1a2e1a; border-color: #3ecf8e; color: #3ecf8e;
+                font-weight: 600;
+            }
+            .flow-step {
+                display: flex; gap: 0.85rem; margin: 0.35rem 0;
+                padding: 0.55rem 0.75rem; border-radius: 8px;
+                border: 1px solid #22222c; background: #14141a;
+            }
+            .flow-step.done { border-color: #1e3a2a; opacity: 0.85; }
+            .flow-step.current { border-color: #e8b84a; background: #1c1a14; }
+            .flow-step.pending { opacity: 0.45; }
+            .flow-num {
+                flex-shrink: 0; width: 1.6rem; height: 1.6rem; border-radius: 50%;
+                background: #2a2a34; color: #9ca3af; font-size: 0.75rem;
+                display: flex; align-items: center; justify-content: center; font-weight: 600;
+            }
+            .flow-step.done .flow-num { background: #1a3d2a; color: #3ecf8e; }
+            .flow-step.current .flow-num { background: #3d3520; color: #e8b84a; }
+            .flow-body { flex: 1; min-width: 0; }
+            .flow-body b { color: #ececf1; font-size: 0.92rem; }
+            .flow-body .meta { color: #9ca3af; font-size: 0.82rem; margin-top: 0.15rem; }
+            .flow-action-tag {
+                display: inline-block; padding: 0.12rem 0.45rem; border-radius: 4px;
+                font-size: 0.68rem; font-weight: 650; letter-spacing: 0.03em; margin-right: 0.35rem;
+            }
+            .tag-ENTER { background: #1a3d2a; color: #3ecf8e; }
+            .tag-EXIT { background: #3d1a1a; color: #ef6b6b; }
+            .tag-CAP_BLOCK { background: #3d2a1a; color: #e8b84a; }
+            .tag-APPROACH { background: #1a2a3d; color: #5b8def; }
+            .tag-FLAT { background: #22222c; color: #6b7280; }
+            .tag-MISSING, .tag-ERROR { background: #3d1a2a; color: #f472b6; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _slot_html(book: dict[str, Any]) -> str:
+    open_list = book.get("open_symbols") or []
+    cells = []
+    for i in range(book["max_concurrent"]):
+        if i < len(open_list):
+            sym = open_list[i]
+            cells.append(f'<div class="flow-slot on" title="{sym}">{sym[:3]}</div>')
+        else:
+            cells.append('<div class="flow-slot">·</div>')
+    return "".join(cells)
 
 
 def render_sleeve_watch_tab(
@@ -22,163 +104,190 @@ def render_sleeve_watch_tab(
     *,
     blocked_by_sym: dict[str, frozenset[pd.Timestamp]],
 ) -> None:
+    _inject_flow_styles()
+    sym_map = {r["symbol"]: r for r in results}
+    book = book_snapshot(results)
+    queue = build_action_queue(results, blocked_by_sym)
+    ctx = book_flow_context(book, queue)
+
+    # --- 1. Book gate (always first) ---
     st.markdown(
-        """
-        <div class="forecast-legend">
-        <b>Sleeve Watch</b> — parallel auditor for manual validation (no orders).<br>
-        <b>Official</b> steps use last <b>closed daily bar</b> (same as daily paper bot).<br>
-        <b>Provisional</b> (crypto) uses Binance developing 1d — <b>not</b> official SIG until UTC close.<br>
-        Log <b>Actual</b> fills when you trade live to compare vs expected.
+        f"""
+        <div class="flow-hero">
+            <h3>① BOOK · {ctx["phase"]}</h3>
+            <p>{ctx["instruction"]}</p>
+            <div class="flow-slots">{_slot_html(book)}</div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    book = book_snapshot(results)
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Open sleeves", f"{book['open_count']}/{book['max_concurrent']}")
-    c2.metric("Pending entry", book["pending_count"])
-    c3.metric("Slots free", book["slots_free"])
-    pending_txt = ", ".join(book["pending_symbols"]) if book["pending_symbols"] else "—"
-    c4.metric("Enter soon", pending_txt[:24] + ("…" if len(pending_txt) > 24 else ""))
+    st.caption(
+        f"Max {book['max_concurrent']} concurrent · {book['open_count']} open · "
+        f"{book['slots_free']} slot(s) free · pending entry: {book['pending_count']}"
+    )
 
-    sym_map = {r["symbol"]: r for r in results}
-    missing = [s for s in LIVE_SYMBOLS if s not in sym_map]
-    if missing:
-        st.warning(f"No saved state for: {', '.join(missing)} — run daily bot or ↻ full replay.")
+    # --- 2. Action queue (what needs you today) ---
+    st.markdown("## ② Today's queue")
+    st.caption("Work top → bottom. Select a row to walk the rule pipeline for that sleeve.")
 
-    st.markdown("#### All sleeves")
-    row_a, row_b = st.columns(4), st.columns(4)
-    for i, sym in enumerate(LIVE_SYMBOLS):
-        col = (row_a if i < 4 else row_b)[i % 4]
-        r = sym_map.get(sym)
-        with col:
-            if not r:
-                st.metric(sym, "—", help="missing")
-                continue
-            latest = r.get("latest") or {}
-            blocked = blocked_by_sym.get(sym.upper(), frozenset())
-            brief = sleeve_brief_state(
-                latest=latest,
-                strat_cfg=r["strat_cfg"],
-                pending_entry=r.get("pending_entry"),
-                open_position=r.get("open_position"),
-                blocked_dates=blocked,
-            )
-            sig = "SIG" if latest.get("signal") else "—"
-            bps = latest.get("breakout_bps")
-            bps_txt = f"{bps:.0f}bp" if bps is not None else ""
-            st.metric(sym, brief[:22], delta=f"{sig} {bps_txt}".strip() or None)
-
-    default_ix = 0
-    for i, s in enumerate(LIVE_SYMBOLS):
-        if sym_map.get(s, {}).get("pending_entry") or sym_map.get(s, {}).get("open_position"):
-            default_ix = i
-            break
-
-    col_sel, col_ref = st.columns([2, 1])
-    with col_sel:
-        symbol = st.selectbox("Sleeve", LIVE_SYMBOLS, index=default_ix, key="watch_symbol")
-    with col_ref:
-        auto = st.checkbox("Auto-refresh 60s", value=False, key="watch_auto_refresh")
-        if auto:
-            st.caption("Refreshing…")
-
-    if auto:
-
-        @st.fragment(run_every=60)
-        def _auto_body() -> None:
-            _render_watch_body(symbol, sym_map, blocked_by_sym)
-
-        _auto_body()
+    actionable = [q for q in queue if q["action"] not in ("FLAT", "MISSING", "ERROR")]
+    if not actionable:
+        st.info("Nothing requires action right now. Expand a flat sleeve below to verify rules.")
     else:
-        _render_watch_body(symbol, sym_map, blocked_by_sym)
+        for q in actionable:
+            tag = q["action"]
+            label = f"{q['symbol']} — {q['headline']}"
+            if st.button(label, key=f"flow_pick_{q['symbol']}", width="stretch"):
+                st.session_state["flow_symbol"] = q["symbol"]
+
+    with st.expander("All sleeves (flat / scan)", expanded=False):
+        for q in queue:
+            if q["action"] in ("FLAT", "MISSING", "ERROR"):
+                st.markdown(
+                    f'<span class="flow-action-tag tag-{q["action"]}">{q["action"]}</span> '
+                    f"**{q['symbol']}** — {q['headline']}",
+                    unsafe_allow_html=True,
+                )
+                if st.button(f"Inspect {q['symbol']}", key=f"flow_flat_{q['symbol']}"):
+                    st.session_state["flow_symbol"] = q["symbol"]
+
+    # Default focus: highest-priority actionable, else first symbol
+    if "flow_symbol" not in st.session_state:
+        st.session_state["flow_symbol"] = (
+            actionable[0]["symbol"] if actionable else LIVE_SYMBOLS[0]
+        )
+
+    # --- 3. Sleeve walkthrough ---
+    st.markdown("## ③ Sleeve walkthrough")
+    symbol = st.radio(
+        "Focus",
+        LIVE_SYMBOLS,
+        index=LIVE_SYMBOLS.index(st.session_state.get("flow_symbol", LIVE_SYMBOLS[0])),
+        horizontal=True,
+        key="flow_symbol_radio",
+        label_visibility="collapsed",
+    )
+    st.session_state["flow_symbol"] = symbol
+
+    _render_walkthrough(symbol, sym_map, blocked_by_sym, queue)
 
 
-def _render_watch_body(
+def _render_walkthrough(
     symbol: str,
     sym_map: dict[str, dict[str, Any]],
     blocked_by_sym: dict[str, frozenset[pd.Timestamp]],
+    queue: list[dict[str, Any]],
 ) -> None:
     r = sym_map.get(symbol)
+    action = next((q for q in queue if q["symbol"] == symbol.upper()), None)
     if not r:
-        st.warning("No data for this sleeve — run ↻ or daily bot.")
+        st.error("No paper state for this sleeve. Run `./btc_breakout_clean/run_dashboard.sh --daily`.")
         return
-
-    strat_cfg = r["strat_cfg"]
-    latest = r.get("latest") or {}
-    pending = r.get("pending_entry")
-    open_pos = r.get("open_position")
 
     blocked = blocked_by_sym.get(symbol.upper(), frozenset())
     audit = audit_sleeve(
         symbol,
-        latest=latest,
-        strat_cfg=strat_cfg,
-        pending_entry=pending,
-        open_position=open_pos,
+        latest=r.get("latest") or {},
+        strat_cfg=r["strat_cfg"],
+        pending_entry=r.get("pending_entry"),
+        open_position=r.get("open_position"),
         blocked_dates=blocked,
-        include_provisional=True,
+        include_provisional=(symbol.upper() in {"BTCUSD", "ETHUSDT", "BNBUSDT", "SOLUSDT", "DOGEUSDT"}),
     )
+    act = action or {"action": "FLAT", "headline": audit["state"]}
+    instruction = primary_instruction(audit, act)
 
-    st.subheader(f"{symbol} — {audit['state']}")
-    st.caption(
-        f"{audit['as_of_utc']} · {audit['data_source']} · official bar {audit['official_bar_date']} · "
-        f"TV: {audit['tv_chart']}"
+    st.markdown(f"### {symbol}")
+    st.markdown(
+        f'<span class="flow-action-tag tag-{act["action"]}">{act["action"]}</span> '
+        f"{act.get('headline', audit['state'])}",
+        unsafe_allow_html=True,
     )
+    st.success(instruction)
 
     if audit.get("expected_notional", 0) > 0:
-        st.info(f"Expected deploy ≈ **${audit['expected_notional']:,.0f}** ({100*audit['expected_notional']/LIVE_SLEEVE_EQUITY:.0f}% of sleeve)")
+        st.caption(
+            f"Deploy ≈ ${audit['expected_notional']:,.0f} "
+            f"({100 * audit['expected_notional'] / LIVE_SLEEVE_EQUITY:.0f}% of ${LIVE_SLEEVE_EQUITY:,.0f} sleeve)"
+        )
 
     if audit.get("provisional_note"):
         prov_sig = audit.get("provisional_signal")
-        prov_bps = audit.get("provisional_breakout_bps")
-        sig_txt = "YES" if prov_sig else "NO"
-        bps_txt = f"{prov_bps:.0f} bps" if prov_bps is not None else "n/a"
-        st.warning(f"**Provisional:** {audit['provisional_note']} · signal={sig_txt} · breakout={bps_txt}")
-
-    status_line = signal_status(latest, strat_cfg, open_pos, pending)
-    st.markdown(f"**Daily bot status:** {status_line}")
-
-    st.markdown("#### Rule checklist (official close)")
-    for step in audit["steps"]:
-        icon = _step_icon(step["pass"])
-        detail = f" — {step['detail']}" if step.get("detail") else ""
-        st.markdown(
-            f"{icon} **{step['label']}** · expected: _{step['expected']}_ · actual: _{step['actual']}_{detail}"
+        bps = audit.get("provisional_breakout_bps")
+        st.warning(
+            f"Intraday preview only (not official): {audit['provisional_note']} · "
+            f"signal={'YES' if prov_sig else 'NO'} · "
+            f"breakout={f'{bps:.0f} bps' if bps is not None else 'n/a'}"
         )
 
-    st.markdown("#### Expected vs actual (your log)")
-    journal = load_journal(symbol, limit=20)
-    if journal:
-        jdf = pd.DataFrame(journal)
-        show_cols = [c for c in ("ts_utc", "event", "expected", "actual", "note") if c in jdf.columns]
-        st.dataframe(jdf[show_cols], width="stretch", hide_index=True)
-    else:
-        st.caption("No journal entries yet — log fills and confirmations below.")
+    st.caption(
+        f"Official bar **{audit['official_bar_date']}** · {audit['data_source']} · "
+        f"as of {audit['as_of_utc']} · chart: {audit['tv_chart']}"
+    )
 
-    with st.expander("Log actual event", expanded=False):
+    st.markdown("#### Rule pipeline")
+    st.caption("Top to bottom = decision order. **Gold** = current gate.")
+
+    pipeline = enrich_pipeline(audit["steps"])
+    for i, step in enumerate(pipeline, start=1):
+        status = step.get("status", "pending")
+        icon = "✓" if status == "done" else ("→" if status == "current" else "·")
+        pass_txt = "pass" if step["pass"] else "fail"
+        detail = f" · {step['detail']}" if step.get("detail") else ""
+        st.markdown(
+            f"""
+            <div class="flow-step {status}">
+                <div class="flow-num">{icon}</div>
+                <div class="flow-body">
+                    <b>{i}. {step['label']}</b>
+                    <div class="meta">{pass_txt} · expected <i>{step['expected']}</i> · actual <i>{step['actual']}</i>{detail}</div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    if r.get("open_position"):
+        op = r["open_position"]
+        st.markdown(
+            f"**Position:** LONG from {op.get('entry_date')} · "
+            f"hold {op.get('hold_day')}/{op.get('hold_max', op.get('hold_days'))} · "
+            f"exit ≤ {op.get('exit_target', '—')}"
+        )
+    elif r.get("pending_entry"):
+        pe = r["pending_entry"]
+        st.markdown(f"**Armed:** SIG {pe.get('signal_date')} → enter next open")
+
+    # --- 4. Log (only when trading) ---
+    if act["action"] in ("ENTER", "EXIT", "CAP_BLOCK", "ARMED"):
+        st.markdown("#### ④ Confirm & log")
+        ev_default = "ENTRY_FILL" if act["action"] == "ENTER" else (
+            "EXIT_FILL" if "fade" in act["headline"].lower() or act["action"] == "EXIT" else "SIG_CONFIRMED"
+        )
         ev = st.selectbox(
             "Event",
-            ["ENTRY_FILL", "EXIT_FILL", "SIG_CONFIRMED", "CAP_BLOCK", "MANUAL_NOTE", "MISMATCH"],
-            key=f"j_ev_{symbol}",
+            ["ENTRY_FILL", "EXIT_FILL", "SIG_CONFIRMED", "CAP_BLOCK", "MISMATCH", "MANUAL_NOTE"],
+            index=["ENTRY_FILL", "EXIT_FILL", "SIG_CONFIRMED", "CAP_BLOCK", "MISMATCH", "MANUAL_NOTE"].index(
+                ev_default
+            ),
+            key=f"flow_ev_{symbol}",
         )
-        exp = st.text_input("Expected", key=f"j_exp_{symbol}", placeholder="e.g. enter 2026-05-27 open ~$12.5k")
-        act = st.text_input("Actual", key=f"j_act_{symbol}", placeholder="e.g. filled $0.1423 on Binance")
-        note = st.text_area("Note", key=f"j_note_{symbol}", height=68)
-        if st.button("Save to journal", key=f"j_save_{symbol}"):
-            append_journal(symbol, event=ev, note=note, expected=exp, actual=act)
-            st.success("Saved.")
+        c1, c2 = st.columns(2)
+        with c1:
+            exp = st.text_input("Expected", value=instruction[:80], key=f"flow_exp_{symbol}")
+        with c2:
+            act_txt = st.text_input("Actual fill / note", key=f"flow_act_{symbol}")
+        note = st.text_input("Note (optional)", key=f"flow_note_{symbol}")
+        if st.button("Save", key=f"flow_save_{symbol}", type="primary"):
+            append_journal(symbol, event=ev, note=note, expected=exp, actual=act_txt)
+            st.toast("Logged.")
             st.rerun()
 
-    st.markdown("#### Timeline")
-    if open_pos:
-        st.write(
-            f"**LONG** from {open_pos.get('entry_date')} @ {open_pos.get('entry_px', 0):,.4g} · "
-            f"hold {open_pos.get('hold_day')}/{open_pos.get('hold_max')} · "
-            f"exit target ≤ {open_pos.get('exit_target')}"
-        )
-    elif pending:
-        st.write(f"**ARMED** — SIG {pending.get('signal_date')} → enter next session open")
-    elif audit.get("gap_to_buffer_bps") is not None:
-        st.write(f"**FLAT** — {audit['gap_to_buffer_bps']:.0f} bps below buffer (regime must stay on)")
+        journal = load_journal(symbol, limit=8)
+        if journal:
+            st.dataframe(
+                pd.DataFrame(journal)[["ts_utc", "event", "expected", "actual"]],
+                hide_index=True,
+                width="stretch",
+            )
