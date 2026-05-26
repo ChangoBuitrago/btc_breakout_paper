@@ -37,7 +37,14 @@ from btc_breakout_paper_sim import (
     effective_hold_min,
     uses_dynamic_hold,
 )
-from run_binance_paper_daily import portfolio_blocked_entry_dates, run_symbol, signal_status, summarize_signal_year
+from run_binance_paper_daily import (
+    portfolio_blocked_from_results,
+    read_portfolio_cap_blocks,
+    run_symbol,
+    signal_status,
+    summarize_signal_year,
+    write_portfolio_cap_blocks,
+)
 from signal_forecast import forecast_display, forecast_for_symbol, forecast_sort_key
 from sleeve_watch_ui import render_sleeve_watch_tab
 
@@ -170,10 +177,30 @@ def load_symbol_from_disk(symbol: str) -> dict[str, Any] | None:
     }
 
 
-@st.cache_data(show_spinner=False, ttl=3600)
-def load_portfolio_cap_blocks(refresh_cache: bool) -> dict[str, frozenset[pd.Timestamp]]:
-    args = _args(refresh_cache=refresh_cache)
-    return portfolio_blocked_entry_dates(args, list(LIVE_SYMBOLS), LIVE_MAX_CONCURRENT_ENTRIES)
+STATE_DIR = HERE / "paper_portfolio"
+
+
+def resolve_portfolio_cap_blocks(
+    results: list[dict[str, Any]],
+    *,
+    full_replay: bool,
+) -> tuple[dict[str, frozenset[pd.Timestamp]], str | None]:
+    """Fast cap map: disk cache on normal load; derive from replay results on ↻."""
+    if full_replay:
+        blocked = portfolio_blocked_from_results(results, LIVE_MAX_CONCURRENT_ENTRIES)
+        write_portfolio_cap_blocks(
+            STATE_DIR,
+            blocked,
+            max_concurrent=LIVE_MAX_CONCURRENT_ENTRIES,
+        )
+        return blocked, None
+    blocked = read_portfolio_cap_blocks(STATE_DIR, list(LIVE_SYMBOLS))
+    if blocked is not None:
+        return blocked, None
+    return (
+        {s.upper(): frozenset() for s in LIVE_SYMBOLS},
+        "Cap map not cached — run `./btc_breakout_clean/run_dashboard.sh --daily` or ↻ full replay.",
+    )
 
 
 @st.cache_data(show_spinner=False, ttl=3600)
@@ -717,7 +744,6 @@ def main() -> None:
             st.session_state["full_replay"] = True
             load_symbol.clear()
             load_forecast.clear()
-            load_portfolio_cap_blocks.clear()
             st.rerun()
     with title_col:
         st.title("Paper book · 2026+")
@@ -769,8 +795,9 @@ def main() -> None:
             st.altair_chart(ret_bar_chart(chart_stats), width="stretch")
 
     with tab_watch:
-        with st.spinner("Portfolio cap map (replay)…"):
-            blocked_map = load_portfolio_cap_blocks(full_replay)
+        blocked_map, cap_warn = resolve_portfolio_cap_blocks(results, full_replay=full_replay)
+        if cap_warn:
+            st.warning(cap_warn)
         render_sleeve_watch_tab(results, blocked_by_sym=blocked_map)
 
     with tab_forecast:
