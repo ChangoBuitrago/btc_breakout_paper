@@ -2,5 +2,7 @@ streamlit>=1.28
 pandas>=2.0
 altair>=5.0
 dukascopy-python>=4.0
+yfinance>=0.2
+ib_async>=2.1.0   # IBKR TWS/Gateway historical data (requires TWS or IB Gateway running)
 
 # Python >= 3.10. Use ./btc_breakout_clean/run_dashboard.sh

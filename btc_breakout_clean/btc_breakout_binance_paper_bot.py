@@ -47,25 +47,37 @@ BINANCE_BASE_URL_FALLBACKS = (
     "https://api.binance.com",
     "https://data-api.binance.vision",
 )
-# Live book (May 2026): $100k equal split across sleeves; max 4 concurrent.
+# Live book (Jun 2026): IBKR LLC US — NRA-owned Wyoming SMLLC (W-8BEN-E).
+# Paper mirrors what you can execute on one IBKR corporate account (no Binance, no spot Brent).
+#   BTCUSD  → IBKR BTC (Paxos)       data: IBKR OHLC  fallback: Binance BTCUSDT
+#   ETHUSDT → IBKR ETH (Paxos)       data: IBKR OHLC  fallback: Binance
+#   SOLUSDT → IBKR SOL (Zero Hash)    data: IBKR OHLC  fallback: Binance
+#   XAUUSD  → IBKR XAUUSD CMDTY/SMART data: IBKR OHLC  fallback: Dukascopy spot
+#   XAGUSD  → IBKR XAGUSD CMDTY/SMART data: IBKR OHLC  fallback: Dukascopy spot
+#   BNO     → IBKR BNO ETF (Brent proxy) data: IBKR OHLC  fallback: yfinance BNO
+# Dropped from live book: DOGEUSDT (thin OOS, Zero Hash HMDS blocked), BNBUSDT, BRENT spot.
 LIVE_SYMBOLS = (
     "BTCUSD",
     "ETHUSDT",
-    "BNBUSDT",
     "SOLUSDT",
-    "DOGEUSDT",
     "XAUUSD",
     "XAGUSD",
-    "BRENT",
+    "BNO",
 )
-LIVE_PORTFOLIO_NOTIONAL = 100_000.0
-LIVE_SLEEVE_EQUITY = LIVE_PORTFOLIO_NOTIONAL / len(LIVE_SYMBOLS)  # $12,500 each
+LIVE_PORTFOLIO_NOTIONAL = 250_000.0
+LIVE_SLEEVE_EQUITY = LIVE_PORTFOLIO_NOTIONAL / len(LIVE_SYMBOLS)  # ~$41,667 each (6 sleeves)
 LIVE_MAX_CONCURRENT_ENTRIES = 4
-# Sleeves that get a hard stop from entry (crypto). Metals/oil unchanged.
-LIVE_CRYPTO_SYMBOLS = frozenset({"BTCUSD", "ETHUSDT", "BNBUSDT", "SOLUSDT", "DOGEUSDT"})
+# Sleeves that get a hard stop from entry (crypto). Metals/ETF unchanged.
+LIVE_CRYPTO_SYMBOLS = frozenset({"BTCUSD", "ETHUSDT", "SOLUSDT"})
 LIVE_STRATEGY_PARAMS: dict[str, dict[str, float | int | str | bool]] = {
+    # ── Live IBKR book ─────────────────────────────────────────────────────
+    # source = "ibkr"   → fetch via ibkr_data.fetch_ibkr_daily()   (requires TWS/Gateway)
+    # fallback_source   → used automatically when IBKR is unreachable
     "BTCUSD": {
-        "source": "dukascopy",
+        "source": "ibkr",
+        "fallback_source": "binance",
+        "binance_symbol": "BTCUSDT",
+        "ibkr_instrument": "BTC (Paxos)",
         "equity": LIVE_SLEEVE_EQUITY,
         "lookback": 15,
         "buffer_bps": 125.0,
@@ -76,11 +88,13 @@ LIVE_STRATEGY_PARAMS: dict[str, dict[str, float | int | str | bool]] = {
         "hold_max": 10,
         "dynamic_hold": True,
         "stop_loss_pct": 0.05,
-        "fee_bps": 10.0,
+        "fee_bps": 12.0,
         "compound": True,
     },
     "ETHUSDT": {
-        "source": "binance",
+        "source": "ibkr",
+        "fallback_source": "binance",
+        "ibkr_instrument": "ETH (Paxos)",
         "equity": LIVE_SLEEVE_EQUITY,
         "lookback": 10,
         "buffer_bps": 150.0,
@@ -91,7 +105,90 @@ LIVE_STRATEGY_PARAMS: dict[str, dict[str, float | int | str | bool]] = {
         "hold_max": 13,
         "dynamic_hold": True,
         "stop_loss_pct": 0.06,
-        "fee_bps": 10.0,
+        "fee_bps": 12.0,
+        "compound": True,
+    },
+    "SOLUSDT": {
+        "source": "ibkr",
+        "fallback_source": "binance",
+        "ibkr_instrument": "SOL (Zero Hash)",
+        "equity": LIVE_SLEEVE_EQUITY,
+        "lookback": 20,
+        "buffer_bps": 75.0,
+        "max_breakout_bps": 225.0,
+        "trend_mode": "sma200_95",
+        "hold_days": 9,
+        "hold_min": 9,
+        "hold_max": 15,
+        "dynamic_hold": True,
+        "stop_loss_pct": 0.12,
+        "fee_bps": 12.0,
+        "compound": True,
+    },
+    "XAUUSD": {
+        "source": "ibkr",
+        "fallback_source": "dukascopy",
+        "ibkr_instrument": "XAUUSD CMDTY/SMART",
+        "equity": LIVE_SLEEVE_EQUITY,
+        "lookback": 30,
+        "buffer_bps": 100.0,
+        "max_breakout_bps": 225.0,
+        "trend_mode": "sma200_95",
+        "hold_days": 9,
+        "hold_min": 9,
+        "hold_max": 15,
+        "dynamic_hold": True,
+        "fee_bps": 2.0,
+        "compound": True,
+    },
+    "XAGUSD": {
+        "source": "ibkr",
+        "fallback_source": "dukascopy",
+        "ibkr_instrument": "XAGUSD CMDTY/SMART",
+        "equity": LIVE_SLEEVE_EQUITY,
+        "lookback": 30,
+        "buffer_bps": 100.0,
+        "max_breakout_bps": 225.0,
+        "trend_mode": "bull_only",
+        "hold_days": 9,
+        "hold_min": 9,
+        "hold_max": 15,
+        "dynamic_hold": True,
+        "fee_bps": 2.0,
+        "compound": True,
+    },
+    "BNO": {
+        "source": "ibkr",
+        "fallback_source": "yfinance",
+        "yfinance_ticker": "BNO",
+        "ibkr_instrument": "BNO ETF (NYSE Arca)",
+        "equity": LIVE_SLEEVE_EQUITY,
+        "lookback": 30,
+        "buffer_bps": 75.0,
+        "max_breakout_bps": 225.0,
+        "trend_mode": "sma200_95",
+        "hold_days": 9,
+        "hold_min": 9,
+        "hold_max": 15,
+        "dynamic_hold": True,
+        "fee_bps": 5.0,
+        "compound": True,
+    },
+    # ── Research aliases — NOT in live IBKR book ───────────────────────────
+    "DOGEUSDT": {
+        "source": "binance",
+        "ibkr_instrument": "DOGE (Zero Hash) — dropped from live book Jun 2026",
+        "equity": LIVE_SLEEVE_EQUITY,
+        "lookback": 30,
+        "buffer_bps": 75.0,
+        "max_breakout_bps": 225.0,
+        "trend_mode": "sma200_95",
+        "hold_days": 9,
+        "hold_min": 9,
+        "hold_max": 15,
+        "dynamic_hold": True,
+        "stop_loss_pct": 0.12,
+        "fee_bps": 12.0,
         "compound": True,
     },
     "BNBUSDT": {
@@ -109,49 +206,6 @@ LIVE_STRATEGY_PARAMS: dict[str, dict[str, float | int | str | bool]] = {
         "fee_bps": 10.0,
         "compound": True,
     },
-    "SOLUSDT": {
-        "source": "binance",
-        "equity": LIVE_SLEEVE_EQUITY,
-        "lookback": 20,
-        "buffer_bps": 75.0,
-        "max_breakout_bps": 225.0,
-        "trend_mode": "sma200_95",
-        "hold_days": 9,
-        "hold_min": 9,
-        "hold_max": 15,
-        "dynamic_hold": True,
-        "stop_loss_pct": 0.12,
-        "fee_bps": 10.0,
-        "compound": True,
-    },
-    "XAUUSD": {
-        "source": "dukascopy",
-        "equity": LIVE_SLEEVE_EQUITY,
-        "lookback": 30,
-        "buffer_bps": 100.0,
-        "max_breakout_bps": 225.0,
-        "trend_mode": "sma200_95",
-        "hold_days": 9,
-        "hold_min": 9,
-        "hold_max": 15,
-        "dynamic_hold": True,
-        "fee_bps": 2.0,
-        "compound": True,
-    },
-    "XAGUSD": {
-        "source": "dukascopy",
-        "equity": LIVE_SLEEVE_EQUITY,
-        "lookback": 30,
-        "buffer_bps": 100.0,
-        "max_breakout_bps": 225.0,
-        "trend_mode": "bull_only",
-        "hold_days": 13,
-        "hold_min": 13,
-        "hold_max": 15,
-        "dynamic_hold": True,
-        "fee_bps": 2.0,
-        "compound": True,
-    },
     "XCUUSD": {
         "source": "dukascopy",
         "equity": LIVE_SLEEVE_EQUITY,
@@ -166,23 +220,9 @@ LIVE_STRATEGY_PARAMS: dict[str, dict[str, float | int | str | bool]] = {
         "fee_bps": 10.0,
         "compound": True,
     },
-    "DOGEUSDT": {
-        "source": "binance",
-        "equity": LIVE_SLEEVE_EQUITY,
-        "lookback": 30,
-        "buffer_bps": 75.0,
-        "max_breakout_bps": 225.0,
-        "trend_mode": "sma200_95",
-        "hold_days": 9,
-        "hold_min": 9,
-        "hold_max": 15,
-        "dynamic_hold": True,
-        "stop_loss_pct": 0.12,
-        "fee_bps": 10.0,
-        "compound": True,
-    },
     "BRENT": {
         "source": "dukascopy",
+        "ibkr_instrument": "COIL futures / BNO ETF (not spot)",
         "equity": LIVE_SLEEVE_EQUITY,
         "lookback": 30,
         "buffer_bps": 75.0,
@@ -207,8 +247,27 @@ def live_symbol_params(symbol: str) -> dict[str, float | int | str | bool]:
     return LIVE_STRATEGY_PARAMS.get(symbol.upper(), LIVE_STRATEGY_PARAMS["BTCUSD"])
 
 
+def live_symbol_ibkr_instrument(symbol: str) -> str:
+    return str(live_symbol_params(symbol).get("ibkr_instrument", symbol.upper()))
+
+
+def live_binance_symbol(symbol: str) -> str:
+    params = live_symbol_params(symbol)
+    return str(params.get("binance_symbol", symbol.upper()))
+
+
+def live_yfinance_ticker(symbol: str) -> str:
+    params = live_symbol_params(symbol)
+    return str(params.get("yfinance_ticker", symbol.upper()))
+
+
 def live_symbol_source(symbol: str) -> str:
     return str(live_symbol_params(symbol).get("source", "binance"))
+
+
+def live_symbol_fallback_source(symbol: str) -> str:
+    """Proxy source to use when IBKR TWS/Gateway is unreachable."""
+    return str(live_symbol_params(symbol).get("fallback_source", live_symbol_source(symbol)))
 
 
 def live_symbol_equity(symbol: str, fallback: float) -> float:

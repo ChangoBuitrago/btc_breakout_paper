@@ -340,8 +340,9 @@ class SimConfig:
 
 
 def default_skip_saturday_entry(source: str) -> bool:
-    """Dukascopy daily bars include Saturday; align with Pine skip_sat_entry."""
-    return source == "dukascopy"
+    """Dukascopy daily bars include Saturday; align with Pine skip_sat_entry.
+    IBKR returns calendar-day bars for 24h assets, so same rule applies."""
+    return source in {"dukascopy", "ibkr"}
 
 
 def apply_entry_slippage(open_px: float, vol20: float, sim_cfg: SimConfig) -> float:
@@ -394,7 +395,7 @@ def load_cached_btc(cache_path: Path, start: str, end: str | None, include_curre
     return df.loc[df.index >= pd.Timestamp(start, tz="UTC").normalize()]
 
 
-def download_btc(start: str, end: str | None, include_current: bool) -> pd.DataFrame:
+def download_yfinance_daily(ticker: str, start: str, end: str | None, include_current: bool) -> pd.DataFrame:
     try:
         import yfinance as yf
     except ImportError as exc:
@@ -409,7 +410,7 @@ def download_btc(start: str, end: str | None, include_current: bool) -> pd.DataF
     for dl_end in end_candidates:
         attempted.append(str(dl_end or "latest"))
         try:
-            raw = yf.download("BTC-USD", start=start, end=dl_end, progress=False, auto_adjust=False)
+            raw = yf.download(ticker, start=start, end=dl_end, progress=False, auto_adjust=False)
         except Exception:
             continue
         df = raw if not isinstance(raw, tuple) else raw[0]
@@ -417,7 +418,7 @@ def download_btc(start: str, end: str | None, include_current: bool) -> pd.DataF
             break
 
     if df.empty:
-        raise RuntimeError(f"BTC-USD download returned empty data; attempted end={attempted}")
+        raise RuntimeError(f"{ticker} yfinance download returned empty data; attempted end={attempted}")
     df = normalize_ohlc(df)
 
     if not include_current and not df.empty:
@@ -425,7 +426,23 @@ def download_btc(start: str, end: str | None, include_current: bool) -> pd.DataF
     return df
 
 
-def fetch_btc(start: str, end: str | None, include_current: bool, cache_path: Path, refresh_cache: bool) -> pd.DataFrame:
+def download_btc(start: str, end: str | None, include_current: bool) -> pd.DataFrame:
+    return download_yfinance_daily("BTC-USD", start, end, include_current)
+
+
+def yfinance_cache_path(ticker: str) -> Path:
+    safe = ticker.upper().replace("/", "-").replace(":", "-")
+    return Path(__file__).resolve().parent / "cache" / f"{safe}_yfinance_daily.csv"
+
+
+def fetch_yfinance_daily(
+    ticker: str,
+    start: str,
+    end: str | None,
+    include_current: bool,
+    cache_path: Path,
+    refresh_cache: bool,
+) -> pd.DataFrame:
     cached = pd.DataFrame()
     if not refresh_cache:
         cached = load_cached_btc(cache_path, start, end, include_current)
@@ -433,7 +450,7 @@ def fetch_btc(start: str, end: str | None, include_current: bool, cache_path: Pa
             return cached
 
     try:
-        df = download_btc(start, end, include_current)
+        df = download_yfinance_daily(ticker, start, end, include_current)
     except Exception:
         if not cached.empty:
             return cached
@@ -442,6 +459,10 @@ def fetch_btc(start: str, end: str | None, include_current: bool, cache_path: Pa
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(cache_path)
     return df
+
+
+def fetch_btc(start: str, end: str | None, include_current: bool, cache_path: Path, refresh_cache: bool) -> pd.DataFrame:
+    return fetch_yfinance_daily("BTC-USD", start, end, include_current, cache_path, refresh_cache)
 
 
 @contextmanager
@@ -551,12 +572,24 @@ def fetch_dukascopy_btc(path: Path, start: str, end: str | None, include_current
 
 
 def fetch_source_data(sim_cfg: SimConfig) -> pd.DataFrame:
-    if sim_cfg.source == "yfinance":
-        return fetch_btc(
+    if sim_cfg.source == "ibkr":
+        from ibkr_data import fetch_ibkr_daily
+        return fetch_ibkr_daily(
+            sim_cfg.instrument,
             sim_cfg.data_start,
             sim_cfg.end,
             sim_cfg.include_current,
-            sim_cfg.cache_path,
+            refresh_cache=sim_cfg.refresh_cache,
+        )
+    if sim_cfg.source == "yfinance":
+        ticker = str(sim_cfg.instrument or "BTC-USD")
+        cache = sim_cfg.cache_path if sim_cfg.cache_path != Path("") else yfinance_cache_path(ticker)
+        return fetch_yfinance_daily(
+            ticker,
+            sim_cfg.data_start,
+            sim_cfg.end,
+            sim_cfg.include_current,
+            cache,
             sim_cfg.refresh_cache,
         )
     if sim_cfg.source == "dukascopy":

@@ -1,35 +1,27 @@
 // This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
 //@version=5
-// Paper bot mirror — 1D chart. Presets match LIVE_STRATEGY_PARAMS ($12.5k/sleeve, 2018+ rules).
-//   BTCUSD  Dukascopy  lb15 buf125 cap225 hold5-10  bull_only
-//   ETHUSDT Binance    lb10 buf150 cap225 hold10-13 bull_only
-//   BNBUSDT Binance    lb15 buf125 cap225 hold6-10  bull_only
-//   SOLUSDT Binance    lb20 buf75  cap225 hold9-15  sma200_95
-//   DOGEUSDT Binance   lb30 buf75  cap225 hold9-15  sma200_95
-//   XAUUSD  Dukascopy  lb30 buf100 cap225 hold9-15  sma200_95
-//   XAGUSD  Dukascopy  lb30 buf100 cap225 hold13-15 bull_only
-//   (XCUUSD removed from live book May 2026 — chart preset kept for research)
-//   BRENT   Dukascopy  lb30 buf75  cap225 hold9-15  sma200_95
+// Paper bot mirror — IBKR NRA LLC book. Presets match LIVE_STRATEGY_PARAMS (~$41.7k/sleeve, 6 sleeves).
+//   BTCUSD  Binance→IBKR BTC   lb15 buf125 cap225 hold5-10  bull_only
+//   ETHUSDT Binance→IBKR ETH   lb10 buf150 cap225 hold10-13 bull_only
+//   SOLUSDT Binance→IBKR SOL   lb20 buf75  cap225 hold9-15  sma200_95
+//   XAUUSD  Dukascopy→CMDTY    lb30 buf100 cap225 hold9-15  sma200_95
+//   XAGUSD  Dukascopy→CMDTY    lb30 buf100 cap225 hold9-15  bull_only
+//   BNO     yfinance→IBKR ETF  lb30 buf75  cap225 hold9-15  sma200_95  (Brent proxy)
 // Book: max 4 concurrent entries (FCFS) — not modeled per-chart; see Python replay.
 //
 // TradingView chart symbols (use 1D / daily):
-//   DOGEUSDT  → BINANCE:DOGEUSDT     (spot; live signal feed — NOT Coinbase/DOGEUSD)
-//   ETHUSDT   → BINANCE:ETHUSDT
-//   BNBUSDT   → BINANCE:BNBUSDT
-//   SOLUSDT   → BINANCE:SOLUSDT
-//   BTCUSD    → Dukascopy in bot; TV has no Dukascopy — use OANDA:BTCUSD or BITSTAMP:BTCUSD (approx)
-//   XAUUSD    → OANDA:XAUUSD or TVC:GOLD (Dukascopy in bot)
-//   XAGUSD    → OANDA:XAGUSD or TVC:SILVER
-//   BRENT     → TVC:UKOIL or OANDA:BCOUSD (Dukascopy in bot)
-// DOGE has ~half the trades of BRENT in replay (regime filter + Binance history from Jul 2019).
-// Telegram: header date = SIG (closed bar). IN = next session open. OUT = dynamic hold @ close.
-// Matches Python paper sim including force_exit on the last historical bar when still long.
+//   BTCUSD   → BINANCE:BTCUSDT (bot signal feed; IBKR executes BTC/USD)
+//   ETHUSDT  → BINANCE:ETHUSDT
+//   SOLUSDT  → BINANCE:SOLUSDT
+//   XAUUSD   → OANDA:XAUUSD or TVC:GOLD
+//   XAGUSD   → OANDA:XAGUSD or TVC:SILVER
+//   BNO      → AMEX:BNO (United States Brent Oil Fund)
 indicator("Paper breakout check", shorttitle="PaperSig", overlay=true, max_labels_count=500)
 
-preset_in = input.string("Auto", "Sleeve preset ($12.5k paper)", options=["Auto", "Custom", "BTCUSD", "ETHUSDT", "BNBUSDT", "SOLUSDT", "DOGEUSDT", "XAUUSD", "XAGUSD", "XCUUSD", "BRENT"])
+preset_in = input.string("Auto", "Sleeve preset (~$41.7k IBKR)", options=["Auto", "Custom", "BTCUSD", "ETHUSDT", "SOLUSDT", "XAUUSD", "XAGUSD", "BNO"])
 show_prior_high = input.bool(true, "Plot prior-high level")
 show_trade_bg = input.bool(true, "Shade bars in paper trade")
-skip_sat_entry = input.bool(true, "Skip Saturday entry (Dukascopy sleeves only)", tooltip="Live bot skips Sat entry for Dukascopy (BTC, metals, oil). Binance crypto trades 24/7 — Sat skip is auto-off for DOGE/ETH/BNB/SOL even if this is on.")
+skip_sat_entry = input.bool(true, "Skip Saturday entry (metals only)", tooltip="Live bot skips Sat entry for Dukascopy metals (XAU/XAG). Crypto and BNO ETF skip is auto-off.")
 force_exit_end = input.bool(true, "Force exit at last historical bar (Python sim parity)")
 
 mark_scope = input.string("All history", "Show IN/OUT marks", options=["All history", "Last N days", "Since year"], group="Mark visibility")
@@ -48,30 +40,27 @@ trend_c = input.string("bull_only", "Trend (Custom)", options=["all", "bull_only
 
 ticker_u = str.upper(syminfo.ticker)
 auto_preset() =>
-    str.contains(ticker_u, "DOGE") ? "DOGEUSDT" :
-     str.contains(ticker_u, "SOL") ? "SOLUSDT" :
+    str.contains(ticker_u, "SOL") ? "SOLUSDT" :
      str.contains(ticker_u, "ETH") ? "ETHUSDT" :
-     str.contains(ticker_u, "BNB") ? "BNBUSDT" :
-     str.contains(ticker_u, "BRENT") or str.contains(ticker_u, "UKOIL") or str.contains(ticker_u, "OIL") ? "BRENT" :
+     str.contains(ticker_u, "BNO") ? "BNO" :
      str.contains(ticker_u, "XAU") or str.contains(ticker_u, "GOLD") ? "XAUUSD" :
      str.contains(ticker_u, "XAG") or str.contains(ticker_u, "SILVER") ? "XAGUSD" :
-     str.contains(ticker_u, "XCU") or str.contains(ticker_u, "COPPER") or str.contains(ticker_u, "HG") ? "XCUUSD" :
      str.contains(ticker_u, "BTC") ? "BTCUSD" :
      "BTCUSD"
 
 preset = preset_in == "Auto" ? auto_preset() : preset_in
 
-lookback = preset == "Custom" ? lookback_c : preset == "ETHUSDT" ? 10 : (preset == "SOLUSDT" ? 20 : (preset == "BTCUSD" or preset == "XCUUSD" or preset == "BNBUSDT" ? 15 : 30))
-buffer_bps = preset == "Custom" ? buffer_c : preset == "ETHUSDT" ? 150.0 : (preset == "DOGEUSDT" or preset == "BRENT" or preset == "SOLUSDT" ? 75.0 : (preset == "BTCUSD" or preset == "BNBUSDT" ? 125.0 : 100.0))
+lookback = preset == "Custom" ? lookback_c : preset == "ETHUSDT" ? 10 : (preset == "SOLUSDT" ? 20 : (preset == "BTCUSD" ? 15 : 30))
+buffer_bps = preset == "Custom" ? buffer_c : preset == "ETHUSDT" ? 150.0 : (preset == "BNO" or preset == "SOLUSDT" ? 75.0 : (preset == "BTCUSD" ? 125.0 : 100.0))
 max_breakout_bps = preset == "Custom" ? max_bb_c : 225.0
-hold_min = preset == "Custom" ? hold_c : preset == "ETHUSDT" ? 10 : preset == "BNBUSDT" ? 6 : preset == "XAUUSD" ? 9 : preset == "XAGUSD" ? 13 : preset == "XCUUSD" ? 4 : (preset == "DOGEUSDT" or preset == "BRENT" or preset == "SOLUSDT" ? 9 : 5)
-hold_max = preset == "Custom" ? hold_max_c : preset == "ETHUSDT" ? 13 : preset == "BNBUSDT" ? 10 : preset == "XAUUSD" ? 15 : preset == "XAGUSD" ? 15 : preset == "XCUUSD" ? 5 : (preset == "DOGEUSDT" or preset == "BRENT" or preset == "SOLUSDT" ? 15 : 10)
+hold_min = preset == "Custom" ? hold_c : preset == "ETHUSDT" ? 10 : preset == "XAUUSD" ? 9 : preset == "XAGUSD" ? 9 : (preset == "BNO" or preset == "SOLUSDT" ? 9 : 5)
+hold_max = preset == "Custom" ? hold_max_c : preset == "ETHUSDT" ? 13 : preset == "XAUUSD" ? 15 : preset == "XAGUSD" ? 15 : (preset == "BNO" or preset == "SOLUSDT" ? 15 : 10)
 dynamic_hold = hold_max > hold_min
-trend_mode = preset == "Custom" ? trend_c : (preset == "XAUUSD" or preset == "DOGEUSDT" or preset == "BRENT" or preset == "SOLUSDT" ? "sma200_95" : "bull_only")
-data_note = preset == "ETHUSDT" or preset == "BNBUSDT" or preset == "DOGEUSDT" or preset == "SOLUSDT" ? "Binance" : preset == "Custom" ? "custom" : "Dukascopy"
-is_binance = data_note == "Binance"
-skip_sat_effective = skip_sat_entry and not is_binance
-tv_symbol_hint = preset == "DOGEUSDT" ? "BINANCE:DOGEUSDT" : preset == "ETHUSDT" ? "BINANCE:ETHUSDT" : preset == "BNBUSDT" ? "BINANCE:BNBUSDT" : preset == "SOLUSDT" ? "BINANCE:SOLUSDT" : preset == "BTCUSD" ? "OANDA:BTCUSD (approx)" : preset == "XAUUSD" ? "OANDA:XAUUSD" : preset == "XAGUSD" ? "OANDA:XAGUSD" : preset == "BRENT" ? "TVC:UKOIL" : "—"
+trend_mode = preset == "Custom" ? trend_c : (preset == "XAUUSD" or preset == "BNO" or preset == "SOLUSDT" ? "sma200_95" : "bull_only")
+is_metal = preset == "XAUUSD" or preset == "XAGUSD"
+data_note = preset == "BNO" ? "BNO ETF" : is_metal ? "Dukascopy" : preset == "Custom" ? "custom" : "Binance"
+skip_sat_effective = skip_sat_entry and is_metal
+tv_symbol_hint = preset == "ETHUSDT" ? "BINANCE:ETHUSDT" : preset == "SOLUSDT" ? "BINANCE:SOLUSDT" : preset == "BTCUSD" ? "BINANCE:BTCUSDT" : preset == "XAUUSD" ? "OANDA:XAUUSD" : preset == "XAGUSD" ? "OANDA:XAGUSD" : preset == "BNO" ? "AMEX:BNO" : "—"
 
 fmt_d() =>
     str.format("{0,date,yyyy-MM-dd}", time)
@@ -151,7 +140,6 @@ else if in_pos
         entry_px := na
         peak_close := na
 
-// SIG only on a new flat-to-signal transition (not while already long); allow exit+signal same bar
 new_signal_mark = signal and not in_pos and (not was_in_pos or exited)
 pending_mark = entry_armed and not in_pos and not entered
 
@@ -189,10 +177,10 @@ if barstate.islast
     status_txt = pending ? "Pending SIG " + sig_txt + " → next open" : in_pos ? "LONG " + hold_label + " " + str.tostring(unreal_pct, "#.##") + "%" + fade_note : "Flat"
     hold_detail = dynamic_hold ? "hold" + str.tostring(hold_min) + "-" + str.tostring(hold_max) + " dyn" : "hold" + str.tostring(hold_min)
     scope_note = mark_scope == "All history" ? "marks: all history" : mark_scope == "Last N days" ? "marks: last " + str.tostring(mark_days) + "d" : "marks: since " + str.tostring(mark_since_year)
-    detail = preset + auto_note + " $12.5k | " + data_note + " | lb" + str.tostring(lookback) + " buf" + str.tostring(buffer_bps, "#") + " " + hold_detail + " " + trend_mode
+    detail = preset + auto_note + " $14.3k IBKR | " + data_note + " | lb" + str.tostring(lookback) + " buf" + str.tostring(buffer_bps, "#") + " " + hold_detail + " " + trend_mode
     detail += "\nchart: use " + tv_symbol_hint + " · 1D bars"
     detail += "\n" + scope_note + " | completed trades " + str.tostring(trade_count)
     detail += "\nbar " + fmt_d() + " | SIG date = Telegram closed bar"
     detail += "\nOUT* = force_exit at last hist bar (Python sim)"
-    detail += "\nTV OHLC may differ from Dukascopy/Binance bot feed"
+    detail += "\nTV OHLC may differ from bot proxy feed"
     status := label.new(bar_index, high, status_txt + "\n" + detail, style=label.style_label_lower_left, color=color.new(color.black, 15), textcolor=color.white, size=size.small)

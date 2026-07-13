@@ -1,104 +1,104 @@
 #!/usr/bin/env bash
-# Streamlit paper portfolio dashboard (Python >= 3.10).
+# ──────────────────────────────────────────────────────────────────────────────
+# Simona paper / live runner
 #
-# First-time setup (once):
-#   python3.12 -m venv btc_breakout_clean/.venv-dashboard
-#   source btc_breakout_clean/.venv-dashboard/bin/activate
-#   pip install -r btc_breakout_clean/requirements-dashboard.txt
+# Usage:
+#   ./run_dashboard.sh                  normal: update paper portfolio → open dashboard
+#   ./run_dashboard.sh --no-update      skip daily run, open dashboard with last state
+#   ./run_dashboard.sh --orders         also dry-run order log (TWS must be open)
+#   ./run_dashboard.sh --live           LIVE mode: real orders via IBKR TWS live port
+#   ./run_dashboard.sh --telegram       send Telegram summary after daily run
+#   ./run_dashboard.sh --refresh        force re-download all data caches
+#   ./run_dashboard.sh --health         print IBKR sleeve table, then continue
 #
-# Options (before any streamlit args):
-#   --daily            Run run_binance_paper_daily.py before dashboard
-#   --telegram         With --daily: send Telegram (needs TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID)
-#   --refresh-cache    With --daily: re-download Dukascopy H1 caches (slow)
+# Standalone:  python ibkr_health_check.py
+#
+# Paper → live requires exactly one change:  --live flag (or IBKR_MODE=live env var).
+# Everything else — signal logic, sizing, data feed — is identical.
+#
+# IBKR_MODE / port reference:
+#   paper  TWS port 7497  (default)
+#   live   TWS port 7496
+#   Set IBKR_HOST / IBKR_PORT to override if using IB Gateway (4002/4001).
+# ──────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-HERE="$ROOT/btc_breakout_clean"
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
 cd "$HERE"
 VENV="$HERE/.venv-dashboard"
 
+# ── Find Python ≥ 3.10 ───────────────────────────────────────────────────────
 PY=""
-for candidate in python3.12 python3.11 python3.10 python3; do
-  if command -v "$candidate" >/dev/null 2>&1; then
-    ver="$("$candidate" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
-    major="${ver%%.*}"
-    minor="${ver#*.}"
-    if [ "$major" -ge 3 ] && [ "$minor" -ge 10 ]; then
-      PY="$candidate"
-      break
+for c in python3.12 python3.11 python3.10 python3; do
+  if command -v "$c" >/dev/null 2>&1; then
+    minor="$("$c" -c 'import sys; print(sys.version_info.minor)')"
+    maj="$("$c"   -c 'import sys; print(sys.version_info.major)')"
+    if [ "$maj" -ge 3 ] && [ "$minor" -ge 10 ]; then
+      PY="$c"; break
     fi
   fi
 done
+[ -n "$PY" ] || { echo "Need Python >= 3.10  (brew install python@3.12)"; exit 1; }
 
-if [ -z "$PY" ]; then
-  echo "No Python >= 3.10 found. Install one, e.g.: brew install python@3.12" >&2
-  exit 1
-fi
-
+# ── Auto-create / repair venv ─────────────────────────────────────────────────
 if [ ! -d "$VENV" ]; then
-  echo "No venv at btc_breakout_clean/.venv-dashboard" >&2
-  echo "Create it: $PY -m venv $VENV && source $VENV/bin/activate && pip install -r requirements-dashboard.txt" >&2
-  exit 1
-fi
-# shellcheck source=/dev/null
-source "$VENV/bin/activate"
-if ! python -c "import streamlit, pandas, altair" 2>/dev/null; then
-  echo "Missing dashboard deps. Run: pip install -r requirements-dashboard.txt" >&2
-  exit 1
+  echo "Creating venv…"
+  "$PY" -m venv "$VENV"
+  source "$VENV/bin/activate"
+  pip install -q -r requirements-dashboard.txt
+else
+  source "$VENV/bin/activate"
+  python -c "import streamlit, pandas, altair, ib_async" 2>/dev/null \
+    || pip install -q -r requirements-dashboard.txt
 fi
 
-RUN_DAILY=0
-SEND_TELEGRAM=0
-REFRESH_CACHE=0
-STREAMLIT_ARGS=()
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --daily)
-      RUN_DAILY=1
-      shift
-      ;;
-    --telegram)
-      SEND_TELEGRAM=1
-      shift
-      ;;
-    --refresh-cache)
-      REFRESH_CACHE=1
-      shift
-      ;;
-    *)
-      STREAMLIT_ARGS+=("$1")
-      shift
-      ;;
+# ── Parse flags ───────────────────────────────────────────────────────────────
+UPDATE=1 TELEGRAM=0 REFRESH=0 ORDERS=0 LIVE=0 HEALTH=1
+for arg in "$@"; do
+  case "$arg" in
+    --no-update)  UPDATE=0   ;;
+    --no-health)  HEALTH=0   ;;
+    --telegram)   TELEGRAM=1 ;;
+    --refresh)    REFRESH=1  ;;
+    --orders)     ORDERS=1   ;;
+    --live)       LIVE=1     ;;
+    --health)     HEALTH=1   ;;
   esac
 done
 
-if [ "$RUN_DAILY" -eq 1 ]; then
-  echo "Running daily paper bot (updates paper_portfolio/)…" >&2
-  DAILY_CMD=(python run_binance_paper_daily.py --state-dir paper_portfolio --quiet)
-  if [ "$SEND_TELEGRAM" -eq 0 ]; then
-    DAILY_CMD+=(--no-telegram)
-  fi
-  if [ "$REFRESH_CACHE" -eq 1 ]; then
-    DAILY_CMD+=(--refresh-cache)
-  fi
-  if ! "${DAILY_CMD[@]}"; then
-    echo "Warning: daily paper bot failed; starting dashboard with last saved state." >&2
-  fi
-fi
-
-DASHBOARD_PORT=8501
-if lsof -ti:"${DASHBOARD_PORT}" >/dev/null 2>&1; then
-  echo "Stopping existing process on port ${DASHBOARD_PORT}..." >&2
-  # TERM first (graceful); -9 only if still bound (avoids killing your own shell mid-exec)
-  lsof -ti:"${DASHBOARD_PORT}" | xargs kill -15 2>/dev/null || true
-  sleep 2
-  if lsof -ti:"${DASHBOARD_PORT}" >/dev/null 2>&1; then
-    lsof -ti:"${DASHBOARD_PORT}" | xargs kill -9 2>/dev/null || true
-    sleep 1
-  fi
-fi
-
-if [ "${#STREAMLIT_ARGS[@]}" -gt 0 ]; then
-  exec python -m streamlit run paper_dashboard.py --server.port "${DASHBOARD_PORT}" "${STREAMLIT_ARGS[@]}"
+# Live mode: export env var so all sub-processes (data fetch + order execution) see it.
+if [ "$LIVE" -eq 1 ]; then
+  export IBKR_MODE=live
+  echo "⚡ LIVE MODE — real orders will be placed via IBKR TWS (port 7496)"
 else
-  exec python -m streamlit run paper_dashboard.py --server.port "${DASHBOARD_PORT}"
+  export IBKR_MODE=paper
 fi
+
+# ── IBKR health (one connection, ~10s) ───────────────────────────────────────
+if [ "$HEALTH" -eq 1 ]; then
+  python ibkr_health_check.py || true
+fi
+
+# ── Daily update ─────────────────────────────────────────────────────────────
+if [ "$UPDATE" -eq 1 ]; then
+  CMD=(python run_binance_paper_daily.py --state-dir paper_portfolio --quiet)
+  [ "$TELEGRAM" -eq 0 ] && CMD+=(--no-telegram)
+  [ "$REFRESH"  -eq 1 ] && CMD+=(--refresh-cache)
+  [ "$ORDERS"   -eq 1 ] && CMD+=(--execute-orders)
+  # In paper mode with --orders, force dry-run so nothing real fires accidentally.
+  [ "$LIVE"     -eq 0 ] && [ "$ORDERS" -eq 1 ] && CMD+=(--dry-run-orders)
+
+  echo "Updating paper portfolio  [IBKR_MODE=$IBKR_MODE]…"
+  "${CMD[@]}" || echo "Warning: daily update failed — showing last saved state."
+fi
+
+# ── Kill any stale dashboard process ─────────────────────────────────────────
+PORT=8501
+if lsof -ti:"$PORT" >/dev/null 2>&1; then
+  lsof -ti:"$PORT" | xargs kill -15 2>/dev/null || true
+  sleep 1
+  lsof -ti:"$PORT" >/dev/null 2>&1 && lsof -ti:"$PORT" | xargs kill -9 2>/dev/null || true
+fi
+
+# ── Launch dashboard ──────────────────────────────────────────────────────────
+exec python -m streamlit run paper_dashboard.py --server.port "$PORT"

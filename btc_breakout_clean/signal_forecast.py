@@ -9,13 +9,21 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from btc_breakout_binance_paper_bot import fetch_binance_daily, live_symbol_source
+from btc_breakout_binance_paper_bot import (
+    fetch_binance_daily,
+    live_binance_symbol,
+    live_symbol_fallback_source,
+    live_symbol_source,
+    live_yfinance_ticker,
+)
 from btc_breakout_paper_sim import (
     StrategyConfig,
     add_indicators,
     dukascopy_cache_path,
     fetch_dukascopy_instrument,
+    fetch_yfinance_daily,
     normalize_ohlc,
+    yfinance_cache_path,
 )
 
 HERE = Path(__file__).resolve().parent
@@ -25,26 +33,69 @@ def binance_cache_path(symbol: str) -> Path:
     return HERE / "cache" / f"{symbol.upper()}_binance_1d.csv"
 
 
+def _load_binance(sym: str, start: str, start_ts: pd.Timestamp, refresh_cache: bool) -> pd.DataFrame:
+    pair = live_binance_symbol(sym)
+    path = binance_cache_path(pair)
+    cached = pd.DataFrame()
+    if path.exists():
+        cached = normalize_ohlc(pd.read_csv(path, index_col=0, parse_dates=True))
+    if not refresh_cache and not cached.empty:
+        return cached.loc[cached.index >= start_ts]
+    try:
+        df = fetch_binance_daily(pair, start, None)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        df.to_csv(path)
+        return df
+    except Exception:
+        if cached.empty:
+            raise
+        return cached.loc[cached.index >= start_ts]
+
+
+def _load_yfinance(sym: str, start: str, start_ts: pd.Timestamp, refresh_cache: bool) -> pd.DataFrame:
+    ticker = live_yfinance_ticker(sym)
+    path = yfinance_cache_path(ticker)
+    cached = pd.DataFrame()
+    if path.exists():
+        cached = normalize_ohlc(pd.read_csv(path, index_col=0, parse_dates=True))
+    if not refresh_cache and not cached.empty:
+        return cached.loc[cached.index >= start_ts]
+    try:
+        df = fetch_yfinance_daily(ticker, start, None, False, path, refresh_cache)
+        return df.loc[df.index >= start_ts]
+    except Exception:
+        if cached.empty:
+            raise
+        return cached.loc[cached.index >= start_ts]
+
+
 def load_daily_bars(symbol: str, start: str = "2018-01-01", *, refresh_cache: bool = False) -> pd.DataFrame:
     sym = symbol.upper()
     source = live_symbol_source(sym)
     start_ts = pd.Timestamp(start, tz="UTC").normalize()
+
+    if source == "ibkr":
+        from ibkr_data import fetch_ibkr_daily, ibkr_available
+        if ibkr_available():
+            try:
+                return fetch_ibkr_daily(sym, start, include_current=False, refresh_cache=refresh_cache)
+            except Exception:
+                pass
+        # Fall through to proxy source
+        fallback = live_symbol_fallback_source(sym)
+        if fallback == "binance":
+            return _load_binance(sym, start, start_ts, refresh_cache)
+        if fallback == "yfinance":
+            return _load_yfinance(sym, start, start_ts, refresh_cache)
+        # dukascopy fallback handled below via source = "dukascopy" path
+        source = fallback
+
     if source == "binance":
-        path = binance_cache_path(sym)
-        cached = pd.DataFrame()
-        if path.exists():
-            cached = normalize_ohlc(pd.read_csv(path, index_col=0, parse_dates=True))
-        if not refresh_cache and not cached.empty:
-            return cached.loc[cached.index >= start_ts]
-        try:
-            df = fetch_binance_daily(sym, start, None)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            df.to_csv(path)
-            return df
-        except Exception:
-            if cached.empty:
-                raise
-            return cached.loc[cached.index >= start_ts]
+        return _load_binance(sym, start, start_ts, refresh_cache)
+
+    if source == "yfinance":
+        return _load_yfinance(sym, start, start_ts, refresh_cache)
+
     return fetch_dukascopy_instrument(
         sym,
         dukascopy_cache_path(sym),

@@ -40,3 +40,6 @@ btc_breakout_clean/candidate_backtest_results.json
 btc_breakout_clean/btc_risk_grid_results.json
 btc_breakout_clean/btc_breakout_clean/
 .streamlit/
+
+# Private corporate/treasury planning docs — never commit
+btc_breakout_clean/corporate_treasury/

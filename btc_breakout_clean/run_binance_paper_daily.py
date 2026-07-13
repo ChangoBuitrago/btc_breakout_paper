@@ -31,9 +31,12 @@ from btc_breakout_binance_paper_bot import (  # noqa: E402
     LIVE_PORTFOLIO_EQUITY,
     LIVE_SLEEVE_EQUITY,
     fetch_binance_daily,
+    live_binance_symbol,
     live_symbol_equity,
+    live_symbol_fallback_source,
     live_symbol_source,
     live_strategy_config,
+    live_yfinance_ticker,
     print_bot_report,
     write_state,
 )
@@ -53,11 +56,13 @@ from btc_breakout_paper_sim import (  # noqa: E402
     effective_hold_max,
     effective_hold_min,
     fetch_dukascopy_instrument,
+    fetch_yfinance_daily,
     fmt,
     latest_signal_report,
     momentum_faded,
     simulate_account,
     uses_dynamic_hold,
+    yfinance_cache_path,
 )
 
 
@@ -425,12 +430,37 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--telegram-chat-id", default=os.getenv("TELEGRAM_CHAT_ID"))
     p.add_argument("--no-telegram", action="store_true", help="Disable Telegram notification even if configured")
     p.add_argument("--quiet", action="store_true", help="Suppress per-symbol reports (portfolio summary only)")
+    p.add_argument("--execute-orders", action="store_true",
+                   help="Submit orders to IBKR after signal computation (requires TWS running). "
+                        "Real orders only when IBKR_MODE=live; otherwise dry-run logged only.")
+    p.add_argument("--dry-run-orders", action="store_true",
+                   help="Log what orders would be placed without submitting (for pre-live review).")
     return p.parse_args()
 
 
 def fetch_symbol_daily(args: argparse.Namespace, symbol: str, source: str) -> pd.DataFrame:
+    if source == "ibkr":
+        from ibkr_data import fetch_ibkr_daily, ibkr_available
+        if ibkr_available():
+            try:
+                return fetch_ibkr_daily(
+                    symbol,
+                    args.start,
+                    args.end,
+                    include_current=False,
+                    refresh_cache=args.refresh_cache,
+                )
+            except Exception as exc:
+                import warnings
+                warnings.warn(
+                    f"IBKR fetch failed for {symbol} ({exc}); falling back to proxy source.",
+                    stacklevel=2,
+                )
+        # IBKR unreachable or failed — use proxy source
+        return fetch_symbol_daily(args, symbol, live_symbol_fallback_source(symbol))
     if source == "binance":
-        return fetch_binance_daily(symbol, args.start, args.end, args.base_url)
+        pair = live_binance_symbol(symbol)
+        return fetch_binance_daily(pair, args.start, args.end, args.base_url)
     if source == "dukascopy":
         return fetch_dukascopy_instrument(
             symbol,
@@ -440,14 +470,28 @@ def fetch_symbol_daily(args: argparse.Namespace, symbol: str, source: str) -> pd
             include_current=False,
             refresh_cache=args.refresh_cache,
         )
+    if source == "yfinance":
+        ticker = live_yfinance_ticker(symbol)
+        return fetch_yfinance_daily(
+            ticker,
+            args.start,
+            args.end,
+            include_current=False,
+            cache_path=yfinance_cache_path(ticker),
+            refresh_cache=args.refresh_cache,
+        )
     raise ValueError(f"Unsupported live source for {symbol}: {source}")
 
 
 def source_label(source: str) -> str:
+    if source == "ibkr":
+        return "IBKR TWS/Gateway daily bars"
     if source == "binance":
         return "Binance public 1d klines"
     if source == "dukascopy":
         return "Dukascopy H1 resampled to daily"
+    if source == "yfinance":
+        return "Yahoo Finance daily (ETF proxy)"
     return source
 
 
@@ -628,6 +672,16 @@ def main() -> None:
             print(f"  Telegram notification failed: {type(exc).__name__}: {exc}")
     else:
         print("  Telegram not configured (set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)")
+
+    # ── Order execution (paper TWS or live TWS) ───────────────────────────────
+    if args.execute_orders or args.dry_run_orders:
+        import os as _os
+        from ibkr_orders import execute_daily_signals
+        live_mode = _os.environ.get("IBKR_MODE", "paper").lower() == "live"
+        dry = args.dry_run_orders or not live_mode
+        mode_label = "LIVE" if live_mode else "PAPER"
+        print(f"\n  Order execution ({mode_label} mode, dry_run={dry})…")
+        execute_daily_signals(results, dry_run=dry)
     print("-" * 92)
 
 
